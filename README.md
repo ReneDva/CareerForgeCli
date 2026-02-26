@@ -1,112 +1,56 @@
+# CareerForge CLI & Automated Job Hunter
 
-# CareerForge - Desktop AI Job Search Assistant
-
-CareerForge is a professional-grade desktop command center designed to supercharge your job search. It uses advanced AI to transform your professional "Source of Truth" (a master profile) and a target Job Description into a perfectly tailored application kit.
-
-**Current Version:** 1.0.20
-
-![CareerForge](logoc.png)
+CareerForge CLI is a command-line interface and an automated background agent skill designed to streamline your job search. It uses `jobspy` to scrape job postings from major platforms (LinkedIn, Indeed, Glassdoor, ZipRecruiter) and integrates with OpenClaw via Telegram to automate the process of finding jobs and generating tailored resumes.
 
 ## 🚀 Key Features
 
-### 🧠 Next-Gen AI Architecture
-*   **The Writer (`gemini-2.5-pro`)**: Handles heavy cognitive tasks like layout design, strategy narratives, and resume drafting with a massive thinking budget.
-*   **The Judge (`gemini-2.5-pro`)**: A specialized "Surgical Refinement" agent that audits the generated resume HTML to fix formatting, ensure strict one-page fit, and scrub artifacts.
-*   **The Assistant (`gemini-2.5-flash`)**: Powers fast tasks like job parsing, company intel retrieval, and profile generation.
-
-### ✨ Smart Automation
-*   **Master Profile Wizard**: Don't have a master resume? The built-in 5-step wizard interviews you and generates a perfectly structured Markdown profile to use as your "Source of Truth".
-*   **Smart Clipboard Auto-Fill**: One click analyzes the text in your clipboard to instantly populate the Job Title, Company, and Description fields. No more manual copy-pasting.
-*   **Usage & Cost Tracker**: Monitor your token consumption and estimated API costs in real-time via the built-in dashboard.
-
-### 🎨 Visual & Functional Power
-*   **Modular Generation**: Choose exactly what you need. Only want a CV? Uncheck the rest. Need the full suite? Generate Cover Letter, Strategy, Interview Prep, and Outreach emails.
-*   **Company Recon Dossier**: Generates a dedicated intel cheat sheet with company values, recent initiatives, and insider talking points to help you ace the interview.
-*   **Resume Skins**: Instantly transform the look of your resume with professional themes (Modern Blue, Executive Serif, Tech Minimalist) without regenerating content.
-*   **WYSIWYG "Direct Edit"**: Toggle "Edit Mode" to click and type directly on the resume preview. No code required.
-*   **Native PDF Export**: Generate clean, print-ready PDFs for your Resume and Cover Letter.
-
-### 🗂️ Application Tracker & History
-*   **Interactive Pipeline**: Manage your applications from "Applied" to "Offer". Visual timeline allows you to mark stages as current or add custom steps (e.g., "Home Assignment").
-*   **After-the-Fact Generation**: Did you only generate a Resume initially? Go to your History, open the application, and click "Generate Cover Letter" (or Intel, or Strategy) to create missing assets using the original context.
-*   **Persistent Data**: Your profile, API key, and application history are stored securely in your operating system's standard application data folder (`%APPDATA%`), ensuring they survive updates.
-
----
+*   **JobSpy CLI Wrapper (`jobspy_cli.py`)**: A command-line tool to quickly scrape job boards and save the results in JSON format.
+*   **OpenClaw Job Hunter & CV Generator Skill**: A background agent skill (`jobspy-careerforge-auto`) that continuously monitors for matching jobs and alerts you via Telegram. Reacting with a thumbs up (👍) automatically generates and returns a tailored CareerForge CV using your master profile.
 
 ## 🛠 Prerequisites
 
-*   **Node.js**: (Version 16 or higher recommended)
-*   **Google Gemini API Key**: You can get a free API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+*   **Python 3.x**
+*   **Node.js**: (Version 16 or higher) - Required if you plan to use the CV generation features.
+*   **Google Gemini API Key**: Required for the CareerForge CV generator. Get one from [Google AI Studio](https://aistudio.google.com/app/apikey).
+*   **Telegram Bot Token**: Required for the OpenClaw Agent Skill.
 
 ## 📦 Installation & Setup
 
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/yourusername/careerforge.git
-    cd careerforge
+    git clone https://github.com/yourusername/CareerForgeCli.git
+    cd CareerForgeCli/CareerForgeCli
     ```
 
-2.  **Install Dependencies**
+2.  **Install Python Dependencies**
+    ```bash
+    pip install pandas python-jobspy python-dotenv
+    # Alternatively, run pip install -r requirements.txt
+    ```
+
+3.  **Install Node Dependencies** (for CV generation)
     ```bash
     npm install
     ```
 
-3.  **Run in Development**
-    ```bash
-    npm run app
-    ```
-
-4.  **Package for Distribution (Windows)**
-    To create a distributable `.exe` installer:
-    ```bash
-    npm run dist
-    ```
-    The installer will be located in the `release/` folder.
-
----
-
 ## 📖 User Guide
 
-### 1. Authentication
-Upon first launch, enter your **Gemini API Key**.
-*   Check "Remember Key" to save it locally.
+### 1. Manual Command-Line Scraping (JobSpy CLI)
+You can manually run queries for jobs directly using the Python CLI script:
+```bash
+python jobspy_cli.py --query "Software Engineer" --location "Remote" --hours-old 24 --results 10 --out my_jobs.json
+```
+Arguments:
+*   `--query` / `-q`: The job title or generic search term (e.g. "Data Scientist").
+*   `--location` / `-l`: City, State, or "Remote".
+*   `--hours-old` / `-H`: How far back to search (in hours).
+*   `--results` / `-r`: Number of results to fetch per platform.
+*   `--out` / `-o`: Output JSON file to save the data. Prints to terminal if not provided.
 
-### 2. Setting Your Source of Truth
-Your "Source of Truth" is a `.md` or `.txt` file containing your entire professional history.
-*   **Upload**: Drag and drop your existing file.
-*   **Create**: Click "Don't have a profile?" to launch the **Profile Wizard** and generate one from scratch.
-*   **Persist**: Check **"Remember this profile"** to save it to disk.
-
-### 3. Forging an Application
-1.  **Inputs**: Copy a job post and click **"Auto-Fill from Clipboard"**.
-2.  **Modular Options**: Check the boxes for the assets you want (Resume is mandatory).
-3.  **Generate**: Click "Generate Assets". The cinematic progress bar will track the drafting and refinement phases.
-
-### 4. Review & Edit
-*   **Skins**: Use the dropdown in the Resume tab to change the visual style.
-*   **Edit Mode**: Toggle this to fix typos or rephrase content directly on the page.
-*   **Download**: Export your documents to PDF.
-
-### 5. Tracking & History
-1.  **Save**: Click **"Application Sent"** to save the kit to the `Applications` tab.
-2.  **History**: Navigate to the **"Applications"** tab to view your timeline.
-3.  **Generate Missing**: If you skipped the Cover Letter or Intel Dossier earlier, you can click the "Generate" button inside the history card to create it now.
-
----
-
-## 📂 Data Structure
-
-The app stores all user data in `%APPDATA%\CareerForge` (Windows) to ensure persistence across updates.
-
-*   `user_data/profile.md`: Your master profile.
-*   `user_data/config.json`: Encrypted-like storage for API key.
-*   `user_data/Kits/applications.json`: The database of all your applications and their current status.
-*   `user_data/usage.json`: Log of API token usage.
-
-## 🐛 Debugging
-
-*   **Developer Tools**: Press `F12` at any time to open the console and view internal logs, API request status, and state changes.
-
----
-
-*Built with React, Electron, TailwindCSS, and Google Gemini.*
+### 2. Automation (OpenClaw Telegram Skill)
+To set up continuous background monitoring with automated Telegram alerts and CV generation:
+1. Load the `jobspy-careerforge-auto` skill into your OpenClaw agent environment.
+2. Provide the agent with your `GEMINI_API_KEY` and `TELEGRAM_BOT_TOKEN`.
+3. Provide the agent with a path to your master Markdown profile (e.g., `profile.md`).
+4. Tell your agent your preferences (e.g., "Find me remote UI/UX roles every 4 hours").
+5. The agent runs in the background. When it sends a matching job via Telegram, **react with a 👍**. The agent will automatically use CareerForge to draft your PDF resume and reply with the file.
