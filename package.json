@@ -1,0 +1,27 @@
+{
+  "name": "career-forge-cli",
+  "version": "1.0.0",
+  "description": "AI-powered job application CLI tool for generating CVs.",
+  "author": {
+    "name": "CareerForge Team",
+    "email": "support@careerforge.app"
+  },
+  "main": "dist/cli.js",
+  "bin": {
+    "careerforge": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "commander": "^11.1.0",
+    "dotenv": "^16.3.1",
+    "puppeteer": "^21.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "typescript": "^5.2.2"
+  }
+}
