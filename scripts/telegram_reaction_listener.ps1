@@ -27,14 +27,15 @@ $rocketEmoji = [char]::ConvertFromUtf32(0x1F680)
 function Get-Offset {
     if (Test-Path $offsetPath) {
         $v = Get-Content $offsetPath -Raw -Encoding UTF8
-        if ($v -match '^\d+$') { return [int64]$v }
+        $trimmed = if ($null -ne $v) { "$v".Trim() } else { '' }
+        if ($trimmed -match '^\d+$') { return [int64]$trimmed }
     }
     return 0
 }
 
 function Save-Offset {
     param([int64]$Offset)
-    Set-Content -Path $offsetPath -Value "$Offset" -Encoding UTF8
+    Set-Content -Path $offsetPath -Value "$Offset" -Encoding UTF8 -NoNewline
 }
 
 function Ensure-InvalidNoticeLogFile {
@@ -431,8 +432,8 @@ function Get-OpenTaskStatusesMessage {
 }
 
 function Get-OpenClawPathsMessage {
-    $home = [Environment]::GetFolderPath('UserProfile')
-    $defaultRoot = Join-Path $home '.openclaw'
+    $userHomeDir = [Environment]::GetFolderPath('UserProfile')
+    $defaultRoot = Join-Path $userHomeDir '.openclaw'
 
     $configPath = if ($env:OPENCLAW_CONFIG_PATH) { "$($env:OPENCLAW_CONFIG_PATH)" } else { Join-Path $defaultRoot 'openclaw.json' }
     $stateDir = if ($env:OPENCLAW_STATE_DIR) { "$($env:OPENCLAW_STATE_DIR)" } else { $defaultRoot }
