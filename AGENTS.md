@@ -117,6 +117,30 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
 
+### 📚 CandleKeep Knowledge Base (Default)
+
+When domain knowledge is needed, use CandleKeep as the primary source **before** generic web search.
+
+Default workflow:
+1. `ck items list --json`
+2. Locate relevant book by title/keywords
+3. `ck items toc <id>`
+4. `ck items read <id> --pages "X-Y"`
+5. Extract insights and apply directly to the task
+6. Cite which book + pages were used in your output
+
+Preferred books to search first:
+- Anthropic's guide to building effective agents
+- The complete guide to building Claude skills
+- Google Gemini prompting best practices
+- OpenAI prompting best practices
+- React / Vercel frontend engineering guidelines
+- Supabase Postgres best practices
+- OWASP security testing guide
+
+Reference pack in repo:
+- `docs/CANDLEKEEP_AGENT_COMMAND_PACK.md`
+
 **🎭 Voice Storytelling:** If you have `sag` (ElevenLabs TTS), use voice for stories, movie summaries, and "storytime" moments! Way more engaging than walls of text. Surprise people with funny voices.
 
 **📝 Platform Formatting:**
