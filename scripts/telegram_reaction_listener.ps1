@@ -112,7 +112,7 @@ function Get-MessageMapRow {
 
 function Test-IsMappedMessageRecent {
     param(
-        [Parameter(Mandatory=$true)]$MapRow,
+        [Parameter(Mandatory=$false)]$MapRow,
         [int]$WindowMinutes = 60
     )
 
