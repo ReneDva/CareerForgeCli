@@ -305,42 +305,33 @@ function Start-CvGenerationForJob {
         Write-Host "Failed to send CV-generation ACK message for '$JobId': $_"
     }
 
-    $desc = if ($job.description) { "$($job.description)" } else { "Role: $($job.title)`nCompany: $($job.company)`nLocation: $($job.location)`nLink: $($job.job_url)" }
-    $jobDescPath = Join-Path $workspaceRoot 'current_job_desc.txt'
-    Set-Content -Path $jobDescPath -Value $desc -Encoding UTF8
-
-    $cvPath = Get-NextCvPath -JobId $JobId
+    $workerPath = Join-Path $PSScriptRoot 'telegram_cv_generation_worker.ps1'
+    if (-not (Test-Path $workerPath)) {
+        Write-Host "CV generation worker script is missing: $workerPath"
+        try {
+            Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV generation worker missing' -FieldUpdates @{ last_error = "Worker script not found: $workerPath" } -BotToken $BotToken -ChatId $ChatId -SuppressUserMessage | Out-Null
+        } catch {}
+        return $false
+    }
 
     try {
-        Push-Location $workspaceRoot
-        & node dist/cli.js generate --profile profile.md --job current_job_desc.txt --out "$cvPath" --theme modern
-        $exitCode = $LASTEXITCODE
-        Pop-Location
+        $argList = @(
+            '-NoProfile',
+            '-File', $workerPath,
+            '-JobId', $JobId,
+            '-BotToken', $BotToken,
+            '-ChatId', $ChatId
+        )
 
-        if ($exitCode -ne 0 -or -not (Test-Path $cvPath)) {
-            throw "CV generation command failed (exit=$exitCode)."
-        }
-
-        $caption = "CV draft generated for Job ID: $JobId`nPlease review manually.`nReact with $rocketEmoji only after approval."
-        Send-TelegramDocumentDeterministic -BotToken $BotToken -ChatId $ChatId -FilePath $cvPath -Caption $caption -MaxRetries 3 -RetryDelaySeconds 2 | Out-Null
-
-        $setReady = Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'CV_Ready_For_Review' -Reason 'Draft CV sent to Telegram for manual review' -FieldUpdates @{ latest_cv_path = $cvPath; last_error = '' } -BotToken $BotToken -ChatId $ChatId
-        if (-not $setReady) {
-            return $false
-        }
-        Write-DispatchLog -JobId $JobId -Status 'CV_Ready_For_Review' -Reason 'cv_sent_for_manual_review'
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden | Out-Null
+        Write-Host "Queued async CV generation worker for job_id=$JobId"
         return $true
     } catch {
+        Write-Host "Failed to start async CV generation worker for '$JobId': $_"
         try {
-            Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV generation/send failed' -FieldUpdates @{ last_error = "$_" } -BotToken $BotToken -ChatId $ChatId -SuppressUserMessage | Out-Null
+            Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV generation worker launch failed' -FieldUpdates @{ last_error = "$_" } -BotToken $BotToken -ChatId $ChatId -SuppressUserMessage | Out-Null
         } catch {}
-        Write-DispatchLog -JobId $JobId -Status 'Apply_Failed' -Reason 'cv_generation_or_send_failed'
-        Write-Host "CV generation flow failed for '$JobId': $_"
         return $false
-    } finally {
-        if (Test-Path $jobDescPath) {
-            Remove-Item $jobDescPath -ErrorAction SilentlyContinue
-        }
     }
 }
 
