@@ -70,6 +70,7 @@ Controller returns:
    - `my_chat_member`
 3. Ensure callback UX rule: always call answer-callback equivalent quickly.
 4. Keep stale-update suppression and offset progression deterministic.
+5. Add generator-runtime preflight check before starting CV generation jobs.
 
 ### Files
 - `scripts/telegram_reaction_listener.ps1`
@@ -172,16 +173,21 @@ Controller returns:
 ## Integration checks
 1. Send test messages (`scripts/telegram_send_test_messages.ps1`).
 2. Start listener.
-3. Run commands:
+3. Verify CV generation runtime/agent is active before reaction tests.
+4. Run commands:
    - `/models`
    - `/model status`
    - `/open_tasks`
    - `/paths`
-4. React 👍 to mapped job message.
-5. Verify:
+5. React 👍 to mapped job message.
+6. Verify:
    - status progression to `CV_Ready_For_Review`
    - PDF returned to Telegram
    - logs and map files updated
+
+## Runtime prerequisite note
+- CV generation success depends on active generation runtime/agent context.
+- If runtime is unavailable, controller should fail fast with a clear user message and retain deterministic status updates.
 
 ## E2E (OpenClaw)
 - Approved CV -> OpenClaw manual_assist -> final status + archived artifacts.

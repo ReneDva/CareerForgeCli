@@ -102,24 +102,28 @@ _Last updated: 2026-03-05_
 - לשמור לוג dispatch לקובץ `memory/telegram_dispatch.log` עבור audit.
 - לשמור מיפוי `telegram_message_id -> job_id` בקובץ `memory/telegram_message_map.csv`.
 - להוסיף מאזין `getUpdates` לריאקציות 👍 שמפעיל אוטומטית יצירת CV ושולח PDF חזרה למשתמש.
+- להוסיף בדיקת זמינות Runtime/Agent לפני התחלת יצירת CV, עם הודעת שגיאה ברורה למשתמש במקרה שהריצה אינה זמינה.
 
 #### בדיקות
 - בדיקה חוזרת עם אותו קלט: סדר ההודעות נשאר זהה בכל ריצה.
 - בדיקת הודעות ניסיון לטלגרם באמצעות `scripts/telegram_send_test_messages.ps1`.
 - אימות משתמש בפועל בטלגרם: הודעות נפרדות, תבנית אחידה, וסדר קבוע.
+- בדיקת prerequisite: אם Runtime/Agent ליצירת CV לא פעיל — מתקבלת הודעת כשל ברורה ואין מעבר שקט.
 - בדיקת ריאקציה: לאחר הודעת משרה, תגובת 👍 צריכה להעביר סטטוס ל-`CV_Generating` ואז `CV_Ready_For_Review` עם שליחת PDF.
 
 #### בדיקת End-to-End מומלצת (ידנית)
 1. להריץ שליחת הודעות ניסיון: `powershell -NoProfile -File scripts/telegram_send_test_messages.ps1 -Count 3`
 2. להריץ מאזין תגובות: `powershell -NoProfile -File scripts/telegram_reaction_listener.ps1`
-3. להגיב 👍 להודעת משרה בטלגרם.
-4. לוודא:
+3. לוודא ש-Runtime/Agent ליצירת CV פעיל בסביבה המקומית.
+4. להגיב 👍 להודעת משרה בטלגרם.
+5. לוודא:
   - התקבל PDF review בטלגרם.
   - `job_tracker.csv` עודכן ל-`CV_Ready_For_Review`.
   - נרשם dispatch log בקבצי `memory/telegram_dispatch.log` ו-`memory/telegram_message_map.csv`.
 
 #### Exit Criteria
 - שליחת ההודעות למשתמש מתבצעת בסדר עקבי ותבנית אחידה, עם לוג dispatch מלא.
+- זרימת יצירת CV תלויה ב-Runtime/Agent פעיל ומחזירה הודעת guidance ברורה אם prerequisite חסר.
 
 ---
 

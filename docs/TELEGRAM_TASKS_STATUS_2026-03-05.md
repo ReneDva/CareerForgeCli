@@ -20,9 +20,11 @@
 ## Added tasks (newly tracked)
 - [x] Document successes checkpoint
 - [x] Fix CV generation no-response crash path (null map-row handling)
-- [ ] Fix CV generation failure (Telegram document send/runtime compatibility)
+- [ ] Add CV runtime/agent preflight guard before generation
+- [ ] Improve user guidance when generator runtime is unavailable
 
 ## Open tasks
+- [ ] Fix CV generation failure when generation runtime/agent is unavailable
 - [ ] Implement Phase D apply adapter
 - [ ] Add manual_assist apply mode
 - [ ] Map apply outcomes to FSM

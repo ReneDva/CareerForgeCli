@@ -61,12 +61,15 @@
   - **Root cause:** synchronous CV generation blocking polling loop.
   - **Fix:** introduced async worker (`scripts/telegram_cv_generation_worker.ps1`) and launched generation in background.
 
+6. **`CV generation failed` after reaction despite working Telegram flow**
+  - **Root cause:** CV generation runtime/agent was not active or unavailable at execution time.
+  - **Fix:** reclassified as runtime prerequisite issue (not Telegram send path). Documentation and plan updated to require generator runtime preflight before reaction-driven generation tests.
+
 ## Known open issue (current)
-- CV generation may still fail in some runs with:
+- CV generation requires active generation runtime/agent context.
+- If generator runtime is unavailable, reaction flow correctly reaches:
   - `⚠️ CV generation failed for <job_id>. Check logs for details.`
-- Historical related error observed:
-  - `A parameter cannot be found that matches parameter name 'Form'.`
-- Next focus: normalize Telegram document upload path across PowerShell runtime variants.
+- Next focus: add explicit preflight runtime check and user-facing guidance before generation starts.
 
 ## Next phase target
 - Start **Phase D — Apply Adapter (manual_assist)** after CV generation failure is stabilized:
