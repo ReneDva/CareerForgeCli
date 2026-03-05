@@ -18,22 +18,58 @@
 - Implemented per-chat active model persistence in local runtime state.
 - Added user-facing model status output including fallback chain.
 
+### Phase C — FSM Guard & Runtime Reliability ✅
+- Centralized Telegram-triggered status transitions through a guarded helper.
+- Added user-friendly guidance for invalid transitions and business-guard violations.
+- Fixed reaction handler crash on unmapped messages (`MapRow` nullable flow).
+- Ensured single-listener stability after repeated live troubleshooting (409 conflict cleanup).
+- Fixed command latency under load by moving CV generation into an async worker process.
+
 ## Manual validations completed
 - `/open_tasks` no longer loops or spams; single deterministic response observed.
 - `/paths` command now responds correctly after HOME-variable conflict fix.
 - `/models` displays picker, and `/model status` returns expected active model output.
+- Reaction-driven CV flow responds and no longer blocks command handling during generation.
 
 ## Commits delivered
 - `7f30c50` — fix(telegram): stabilize offset parsing and repair /paths handler
 - `e1e3e56` — feat(telegram): add /models flow with callback-based model selection
+- `37a5f14` — docs(telegram): checkpoint progress and validated milestones
+- `9c24cf3` — feat(fsm): centralize Telegram transitions with user-friendly guard errors
+- `4d02aba` — fix(telegram): handle unmapped reactions without null-binding crash
+- `39f56c0` — fix(telegram): make CV generation async to keep commands responsive
 
-## Known open issue (next focus after Phase C kickoff)
-- CV document send path currently fails in some runs with:
+## Issues encountered and how they were solved
+
+1. **`/open_tasks` menu/response instability**
+  - **Root cause:** command scope precedence and duplicate listener behavior.
+  - **Fix:** cleaned chat-scope override; kept merged default/private command registration.
+
+2. **Repeated `/open_tasks` messages (loop-like behavior)**
+  - **Root cause:** offset parsing edge case and newline persistence.
+  - **Fix:** trim offset before numeric parse; save offset with `-NoNewline`.
+
+3. **`/paths` command failed**
+  - **Root cause:** PowerShell variable name collision (`$home` vs read-only `$HOME`).
+  - **Fix:** renamed to `$userHomeDir`.
+
+4. **Reaction sometimes produced no response**
+  - **Root cause:** concurrent listeners causing Telegram 409 conflicts + null binding on unmapped message row.
+  - **Fix:** enforced single running listener in ops flow and made mapped-row check null-safe.
+
+5. **Commands delayed during CV generation (`/open_tasks`, `/model`)**
+  - **Root cause:** synchronous CV generation blocking polling loop.
+  - **Fix:** introduced async worker (`scripts/telegram_cv_generation_worker.ps1`) and launched generation in background.
+
+## Known open issue (current)
+- CV generation may still fail in some runs with:
+  - `⚠️ CV generation failed for <job_id>. Check logs for details.`
+- Historical related error observed:
   - `A parameter cannot be found that matches parameter name 'Form'.`
-- This likely depends on PowerShell runtime differences and should be normalized in Telegram document upload helper.
+- Next focus: normalize Telegram document upload path across PowerShell runtime variants.
 
 ## Next phase target
-- Start **Phase C — FSM Contract Enforcement**:
-  1. Centralize all Telegram-triggered transitions through state-machine guards.
-  2. Emit clearer user guidance on illegal transitions.
-  3. Keep `status_reason`, `last_error`, and timestamps consistent on every path.
+- Start **Phase D — Apply Adapter (manual_assist)** after CV generation failure is stabilized:
+  1. Add manual_assist apply adapter entrypoint.
+  2. Map apply outcomes deterministically to `Applied` / `Apply_Failed`.
+  3. Keep full status+error traceability in tracker fields.
