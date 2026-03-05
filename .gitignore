@@ -28,3 +28,10 @@ dist-ssr
 *.pdf
 jobs.json
 current_job_desc.txt
+
+# Python local environments
+python_env
+python_env/
+venv/
+__pycache__/
+*.pyc
