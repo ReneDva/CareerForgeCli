@@ -8,22 +8,14 @@
 # process_jobs.ps1
 # This script is called by the OpenClaw agent's heartbeat to process new job listings.
 
+. "$PSScriptRoot\scripts\job_state_machine.ps1"
+. "$PSScriptRoot\scripts\telegram_interface.ps1"
+
 # --- Configuration ---
 $jobsFoundFile = "jobs_found.json"
 $jobTrackerFile = "job_tracker.csv"
 $telegramChatId = "5225138885" # Your Telegram Chat ID
-# Get Token from local .env file instead of relying on Gateway injection
-$dotEnvPath = Join-Path $PSScriptRoot ".env"
-if (Test-Path $dotEnvPath) {
-    $envContent = Get-Content $dotEnvPath
-    # Regex extraction to get only the value after the '='
-    $tokenLine = $envContent | Select-String "TELEGRAM_BOT_TOKEN="
-    if ($tokenLine) {
-        $telegramBotToken = ($tokenLine.ToString() -split '=', 2)[1].Trim().Trim('"').Trim("'")
-    }
-} else {
-    $telegramBotToken = $env:TELEGRAM_BOT_TOKEN
-}
+$telegramBotToken = Get-TelegramBotToken -WorkspaceRoot $PSScriptRoot
 
 # --- Helper Function to Test Job Link ---
 function Test-JobLink {
@@ -49,37 +41,7 @@ function Test-JobLink {
     }
 }
 
-# --- Helper Function to Process Job History ---
-function Process-JobAndCheckHistory {
-    param(
-        [Parameter(Mandatory=$true)]$Job
-    )
-
-    $history = @{}
-    if (Test-Path $jobTrackerFile) {
-        # Import into a dictionary for faster lookups
-        $history = Import-Csv $jobTrackerFile | Group-Object -Property job_id -AsHashTable -AsString
-    }
-
-    # Check if job_id already exists
-    if ($history.ContainsKey($Job.id)) {
-        Write-Host "Job $($Job.id) already processed. Skipping."
-        return $false
-    }
-
-    $newEntry = [PSCustomObject]@{
-        job_id = $Job.id;
-        title = $Job.title;
-        company = $Job.company;
-        status = 'Sent';
-        date_found = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss");
-        cv_file_path = ''
-    }
-
-    $newEntry | Export-Csv -Path $jobTrackerFile -Append -NoTypeInformation -Encoding UTF8
-    Write-Host "New job $($Job.id) added to tracker. Marked as 'Sent'."
-    return $true
-}
+Initialize-JobTracker -TrackerPath $jobTrackerFile
 
 # --- Main Processing Logic ---
 $cvsFolderPath = "Generated_CVs"
@@ -93,8 +55,12 @@ if (Test-Path $jobsFoundFile) {
         $jobs = Get-Content $jobsFoundFile -Raw -Encoding UTF8 | ConvertFrom-Json
 
         if ($jobs -and $jobs.Count -gt 0) {
-            Write-Host "Processing $($jobs.Count) jobs from $jobsFoundFile."
-            foreach ($job in $jobs) {
+            $sortedJobs = Sort-JobsForDeterministicDispatch -Jobs $jobs
+            Write-Host "Processing $($sortedJobs.Count) jobs from $jobsFoundFile (deterministic order)."
+            $sequence = 0
+
+            foreach ($job in $sortedJobs) {
+                $sequence += 1
                 if (-not ($job.job_url)) {
                     Write-Host "Skipping job with no URL: $($job.id)"
                     continue
@@ -105,25 +71,49 @@ if (Test-Path $jobsFoundFile) {
                     continue
                 }
 
-                if (Process-JobAndCheckHistory -Job $job) {
-                    # Simplified message, replacing potentially problematic emojis
-                    $message = "Job ID: $($job.id)`nCompany: $($job.company)`nTitle: $($job.title)`nLocation: $($job.location)`nLink: $($job.job_url)`nSnippet: (Description not scraped - see full link)`n`nReply with approval including this Job ID to continue CV generation/application."
+                $isNewJob = $false
+                try {
+                    $isNewJob = Add-FoundJobIfMissing -TrackerPath $jobTrackerFile -Job $job -Source "job_search_wrapper"
+                } catch {
+                    Write-Host "State tracking error for job '$($job.id)': $_"
+                    continue
+                }
+
+                if ($isNewJob) {
+                    $message = Format-TelegramJobMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count
 
                     if ($telegramBotToken) {
                         Write-Host "Sending Telegram message for job $($job.id)..."
-                        $headers = @{"Content-Type"="application/json"}
-                        $body = @{ chat_id = $telegramChatId; text = $message; parse_mode = "Markdown" } | ConvertTo-Json
                         try {
-                            Invoke-RestMethod -Uri "https://api.telegram.org/bot$telegramBotToken/sendMessage" -Method Post -Headers $headers -Body $body -ErrorAction Stop
+                            $tgResp = Send-TelegramTextDeterministic -BotToken $telegramBotToken -ChatId $telegramChatId -Text $message -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode "HTML"
+                            $messageId = if ($tgResp.result.message_id) { "$($tgResp.result.message_id)" } else { "" }
+                            if (-not [string]::IsNullOrWhiteSpace($messageId)) {
+                                Register-TelegramMessageMap -JobId "$($job.id)" -ChatId "$telegramChatId" -MessageId $messageId
+                            }
+                            Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$($job.id)" -NewStatus "Sent" -Reason "Job notification sent to Telegram" -FieldUpdates @{ telegram_message_id = $messageId }
+                            Write-DispatchLog -JobId "$($job.id)" -Status "Sent" -Reason "telegram_message_dispatched"
                             Write-Host "Telegram message sent for job $($job.id)."
                             Start-Sleep -Seconds 5
                         } catch {
+                            try {
+                                Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$($job.id)" -NewStatus "Apply_Failed" -Reason "Failed to send Telegram notification" -FieldUpdates @{ last_error = "$_" }
+                                Write-DispatchLog -JobId "$($job.id)" -Status "Apply_Failed" -Reason "telegram_send_failed"
+                            } catch {
+                                Write-Host "Failed to persist failure state for job $($job.id): $_"
+                            }
                             Write-Host "ERROR sending Telegram message for job $($job.id): $_"
                         }
                     } else {
+                        try {
+                            Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$($job.id)" -NewStatus "Apply_Failed" -Reason "Missing TELEGRAM_BOT_TOKEN" -FieldUpdates @{ last_error = "TELEGRAM_BOT_TOKEN is not set" }
+                        } catch {
+                            Write-Host "Failed to persist missing-token state for job $($job.id): $_"
+                        }
                         Write-Host "Skipping Telegram message for job $($job.id): TELEGRAM_BOT_TOKEN is not set."
                         Write-Host "Job Details (not sent): Company: $($job.company), Title: $($job.title), Location: $($job.location)"
                     }
+                } else {
+                    Write-Host "Job $($job.id) already tracked. Skipping duplicate notification."
                 }
             }
         } else {

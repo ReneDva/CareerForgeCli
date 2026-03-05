@@ -5,6 +5,24 @@
   "locations": [
     "Israel"
   ],
+  "allowedLocationKeywords": [
+    "Tel Aviv",
+    "Ramat Gan",
+    "Givatayim",
+    "Petah Tikva",
+    "Givat Shmuel"
+  ],
+  "allowUnknownLocation": false,
+  "minDisqualifyingYears": 3,
+  "maxAgeHours": 24,
+  "excludeTitleKeywords": [
+    "Senior",
+    "Lead",
+    "Staff",
+    "Principal",
+    "Manager",
+    "Expert"
+  ],
   "pythonPath": "C:\\Users\\rened\\Documents\\CareerForgeCli\\venv\\Scripts\\python.exe",
   "scriptPath": "C:\\Users\\rened\\Documents\\CareerForgeCli\\jobspy_cli.py",
   "hoursOld": 24,

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "keep-1",
+    "title": "Junior Backend Developer",
+    "company": "GoodTech",
+    "location": "Tel Aviv, Israel",
+    "date_posted": null,
+    "description": "Great junior role, 1-2 years experience preferred",
+    "job_url": "https://example.com/jobs/keep-1"
+  },
+  {
+    "id": "drop-title-1",
+    "title": "Senior Backend Engineer",
+    "company": "BigCorp",
+    "location": "Tel Aviv, Israel",
+    "date_posted": null,
+    "description": "Senior ownership role",
+    "job_url": "https://example.com/jobs/drop-title-1"
+  },
+  {
+    "id": "drop-location-1",
+    "title": "Junior AI Engineer",
+    "company": "NorthTech",
+    "location": "Haifa, Israel",
+    "date_posted": null,
+    "description": "LLM integration role",
+    "job_url": "https://example.com/jobs/drop-location-1"
+  },
+  {
+    "id": "drop-exp-1",
+    "title": "Junior Fullstack Developer",
+    "company": "DemandingInc",
+    "location": "Ramat Gan, Israel",
+    "date_posted": null,
+    "description": "Minimum 4 years of experience in Node.js and React",
+    "job_url": "https://example.com/jobs/drop-exp-1"
+  }
+]

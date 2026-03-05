@@ -1,0 +1,3 @@
+﻿"job_id","source","title","company","location","job_url","status","status_reason","created_at","updated_at","latest_cv_path","submitted_cv_path","apply_attempts","last_error"
+"state-test-1","test","Junior Backend Developer","TestCo","Tel Aviv, Israel","https://example.com/jobs/state-test-1","Applied","notification sent","2026-03-05 18:41:00","2026-03-05 18:41:00","","","0",""
+"state-test-2","test","Junior ML Engineer","TestCo2","Ramat Gan, Israel","https://example.com/jobs/state-test-2","Sent","","2026-03-05 18:41:01","2026-03-05 18:41:01","","","0",""

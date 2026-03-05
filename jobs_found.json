@@ -1,1 +1,9 @@
-[]
+﻿{
+    "id":  "keep-1",
+    "title":  "Junior Backend Developer",
+    "company":  "GoodTech",
+    "location":  "Tel Aviv, Israel",
+    "date_posted":  null,
+    "description":  "Great junior role, 1-2 years experience preferred",
+    "job_url":  "https://example.com/jobs/keep-1"
+}

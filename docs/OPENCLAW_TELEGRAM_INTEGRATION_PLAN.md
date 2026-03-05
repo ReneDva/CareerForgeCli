@@ -1,0 +1,207 @@
+# OpenClaw + Telegram Integration Plan (CareerForge)
+
+_Last updated: 2026-03-05_
+
+## 1) Goal
+
+Build a reliable, low-noise, state-machine-driven Telegram control surface for CareerForge, while integrating OpenClaw as the execution layer for semi-automated apply flows.
+
+## 2) Design Principles
+
+- Human-in-the-loop first: no apply without explicit user approval.
+- Deterministic behavior: same input => same dispatch/order/outcome.
+- Telegram UI is transport, state machine is source of truth.
+- OpenClaw handles browser workflow orchestration, not business rules.
+- Auditability: each action must be traceable by `job_id` + `trace_id`.
+
+## 3) Scope Boundaries
+
+### BotFather responsibilities (configuration only)
+- bot profile settings
+- command list defaults
+- privacy/inline/group toggles
+
+### Code responsibilities (runtime logic)
+- command authorization & routing
+- inline keyboard flows (`/models`, `/model` selection)
+- callback/reaction handling
+- state transitions & transition guards
+- retries, fallback model policy, and anti-spam behavior
+
+## 4) Target Runtime Contract (Telegram -> Controller -> OpenClaw)
+
+All inbound events normalized into:
+
+```json
+{
+  "trace_id": "uuid",
+  "event_type": "message|callback_query|reaction",
+  "chat_id": "string",
+  "user_id": "string",
+  "message_id": "string|null",
+  "job_id": "string|null",
+  "command": "string|null",
+  "payload": {},
+  "received_at": "iso8601"
+}
+```
+
+Controller returns:
+
+```json
+{
+  "action": "send_message|update_status|generate_cv|openclaw_apply|ignore",
+  "reason": "string",
+  "next_state": "Found|Sent|CV_Generating|CV_Ready_For_Review|CV_Revision_Requested|Approved_For_Apply|Applied|Apply_Failed|Rejected_By_User|null",
+  "side_effects": []
+}
+```
+
+## 5) Phased Plan
+
+## Phase A — Stabilize Telegram Intake
+
+### Tasks
+1. Enforce one update mode (polling in local): no webhook/polling conflicts.
+2. Restrict `allowed_updates` for listener to minimal required set:
+   - `message`
+   - `callback_query`
+   - `message_reaction`
+   - `my_chat_member`
+3. Ensure callback UX rule: always call answer-callback equivalent quickly.
+4. Keep stale-update suppression and offset progression deterministic.
+
+### Files
+- `scripts/telegram_reaction_listener.ps1`
+- `scripts/telegram_interface.ps1`
+- `memory/telegram_update_offset.txt`
+
+### Exit Criteria
+- No duplicate processing after restart.
+- No 409 polling conflicts.
+- Callback spinner does not hang.
+
+---
+
+## Phase B — Model Selection Reliability
+
+### Tasks
+1. Keep static command menu via BotFather/API only.
+2. Runtime inline keyboards drive model/provider selection.
+3. Persist active model/provider state per user/chat.
+4. Add deterministic fallback chain on overload:
+   1) `google/gemini-3-pro-preview`
+   2) `google/gemini-2.5-pro`
+   3) `google/gemini-2.0-flash`
+5. Send explicit fallback notification once per request.
+
+### Files
+- `scripts/telegram_reaction_listener.ps1`
+- `scripts/telegram_interface.ps1`
+- optional state file under `memory/`
+
+### Exit Criteria
+- `/models` + selection works in one flow.
+- overload => fallback => successful response or terminal error with clear reason.
+
+---
+
+## Phase C — FSM Contract Enforcement
+
+### Tasks
+1. Route all Telegram-triggered actions through state machine guards.
+2. Reject illegal transitions with user-friendly guidance.
+3. Track `status_reason`, `last_error`, `updated_at` on every transition.
+4. Validate no path reaches `Applied` without `Approved_For_Apply`.
+
+### Files
+- `scripts/job_state_machine.ps1`
+- `scripts/telegram_reaction_listener.ps1`
+- `job_tracker.csv` schema handling logic
+
+### Exit Criteria
+- Transition tests pass.
+- No illegal transition observed in logs.
+
+---
+
+## Phase D — OpenClaw Apply Adapter (Start with manual_assist)
+
+### Tasks
+1. Add adapter function for OpenClaw invocation using `job_id` + `submitted_cv_path`.
+2. Default mode for LinkedIn: `manual_assist`.
+3. Capture OpenClaw result codes and map to:
+   - `Applied`
+   - `Apply_Failed`
+4. Add minimal retry only where safe (navigation/transient), not on final submit.
+
+### Files
+- `process_jobs.ps1`
+- `src/cli.ts` (mode split `manual_assist` / `auto_apply`)
+- OpenClaw invocation layer/scripts
+
+### Exit Criteria
+- one full apply assist flow completes with audit trail.
+
+---
+
+## Phase E — Observability & Noise Controls
+
+### Tasks
+1. Standard structured logs include `trace_id`, `job_id`, `state_before`, `state_after`.
+2. Keep and extend dedupe rules for invalid reactions/messages.
+3. Add quick health command output (`/status`) with:
+   - listener alive
+   - queue depth
+   - active model/provider
+
+### Files
+- `memory/telegram_dispatch.log`
+- `memory/telegram_message_map.csv`
+- `memory/telegram_invalid_notice_log.csv`
+- `scripts/telegram_reaction_listener.ps1`
+
+### Exit Criteria
+- Can reconstruct a full event path for any `job_id`.
+
+## 6) Testing Strategy
+
+## Unit / parser checks
+- PowerShell parse check on changed scripts.
+
+## Integration checks
+1. Send test messages (`scripts/telegram_send_test_messages.ps1`).
+2. Start listener.
+3. Run commands:
+   - `/models`
+   - `/model status`
+   - `/open_tasks`
+   - `/paths`
+4. React 👍 to mapped job message.
+5. Verify:
+   - status progression to `CV_Ready_For_Review`
+   - PDF returned to Telegram
+   - logs and map files updated
+
+## E2E (OpenClaw)
+- Approved CV -> OpenClaw manual_assist -> final status + archived artifacts.
+
+## 7) Risk Register
+
+- Polling/webhook conflict -> enforce one mode + startup guard.
+- Telegram command scope override -> merge strategy across scopes.
+- Backlog noise on restart -> stale window + offset persistence.
+- Overload spam -> one notification per context + fallback once.
+- State drift -> centralize transitions in FSM only.
+
+## 8) First Execution Slice (immediately after snapshot push)
+
+1. Implement startup guard in listener:
+   - detect active webhook and fail fast with remediation text.
+2. Enforce explicit `allowed_updates` list on poll requests.
+3. Add/update structured startup log line including mode and allowed updates.
+4. Run parser validation + one dry run.
+
+---
+
+This plan is intentionally execution-oriented and mapped to current repository structure.
