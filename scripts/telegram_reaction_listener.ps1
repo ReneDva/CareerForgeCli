@@ -197,6 +197,54 @@ function Get-NextCvPath {
     }
 }
 
+function Invoke-JobTransitionWithGuidance {
+    param(
+        [Parameter(Mandatory=$true)][string]$JobId,
+        [Parameter(Mandatory=$true)][string]$NewStatus,
+        [string]$Reason,
+        [hashtable]$FieldUpdates,
+        [Parameter(Mandatory=$true)][string]$BotToken,
+        [Parameter(Mandatory=$true)][string]$ChatId,
+        [switch]$SuppressUserMessage
+    )
+
+    try {
+        if ($PSBoundParameters.ContainsKey('FieldUpdates')) {
+            Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus $NewStatus -Reason $Reason -FieldUpdates $FieldUpdates
+        } else {
+            Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus $NewStatus -Reason $Reason
+        }
+        return $true
+    } catch {
+        $errText = if ($_.Exception -and $_.Exception.Message) { "$($_.Exception.Message)" } else { "$_" }
+        Write-Host "State transition failed for job_id=$JobId target=$NewStatus error=$errText"
+
+        if (-not $SuppressUserMessage) {
+            try {
+                $safeJobId = [System.Security.SecurityElement]::Escape($JobId)
+                $safeTarget = [System.Security.SecurityElement]::Escape($NewStatus)
+
+                if ($errText -match "Invalid status transition: '([^']+)' -> '([^']+)'. Allowed: (.+)$") {
+                    $currentEsc = [System.Security.SecurityElement]::Escape("$($matches[1])")
+                    $allowedEsc = [System.Security.SecurityElement]::Escape("$($matches[3])")
+                    $msg = "&#9888;&#65039; Cannot move job <b>$safeJobId</b> from <b>$currentEsc</b> to <b>$safeTarget</b>.`nAllowed next states: <b>$allowedEsc</b>."
+                } elseif ($errText -match "Guard violation: cannot move to Applied from '([^']+)'") {
+                    $currentEsc = [System.Security.SecurityElement]::Escape("$($matches[1])")
+                    $msg = "&#9888;&#65039; Apply is blocked for job <b>$safeJobId</b>.`nCurrent state: <b>$currentEsc</b>. Must be <b>Approved_For_Apply</b> first."
+                } else {
+                    $msg = "&#9888;&#65039; Could not update state for job <b>$safeJobId</b> to <b>$safeTarget</b>. Please retry."
+                }
+
+                Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+            } catch {
+                Write-Host "Failed to send transition guidance message: $_"
+            }
+        }
+
+        return $false
+    }
+}
+
 function Start-CvGenerationForJob {
     param(
         [Parameter(Mandatory=$true)][string]$JobId,
@@ -229,14 +277,8 @@ function Start-CvGenerationForJob {
         return $false
     }
 
-    try {
-        Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'CV_Generating' -Reason 'Triggered by Telegram thumbs-up reaction'
-    } catch {
-        Write-Host "Failed state transition to CV_Generating for '$JobId': $_"
-        try {
-            $msg = "&#9888;&#65039; Could not start CV generation for <b>$JobId</b>: state transition failed."
-            Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
-        } catch {}
+    $canGenerate = Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'CV_Generating' -Reason 'Triggered by Telegram thumbs-up reaction' -BotToken $BotToken -ChatId $ChatId -SuppressUserMessage:$SuppressInvalidStatusMessage
+    if (-not $canGenerate) {
         return $false
     }
 
@@ -282,12 +324,15 @@ function Start-CvGenerationForJob {
         $caption = "CV draft generated for Job ID: $JobId`nPlease review manually.`nReact with $rocketEmoji only after approval."
         Send-TelegramDocumentDeterministic -BotToken $BotToken -ChatId $ChatId -FilePath $cvPath -Caption $caption -MaxRetries 3 -RetryDelaySeconds 2 | Out-Null
 
-        Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'CV_Ready_For_Review' -Reason 'Draft CV sent to Telegram for manual review' -FieldUpdates @{ latest_cv_path = $cvPath; last_error = '' }
+        $setReady = Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'CV_Ready_For_Review' -Reason 'Draft CV sent to Telegram for manual review' -FieldUpdates @{ latest_cv_path = $cvPath; last_error = '' } -BotToken $BotToken -ChatId $ChatId
+        if (-not $setReady) {
+            return $false
+        }
         Write-DispatchLog -JobId $JobId -Status 'CV_Ready_For_Review' -Reason 'cv_sent_for_manual_review'
         return $true
     } catch {
         try {
-            Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV generation/send failed' -FieldUpdates @{ last_error = "$_" }
+            Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV generation/send failed' -FieldUpdates @{ last_error = "$_" } -BotToken $BotToken -ChatId $ChatId -SuppressUserMessage | Out-Null
         } catch {}
         Write-DispatchLog -JobId $JobId -Status 'Apply_Failed' -Reason 'cv_generation_or_send_failed'
         Write-Host "CV generation flow failed for '$JobId': $_"
