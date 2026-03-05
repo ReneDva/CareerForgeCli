@@ -135,7 +135,8 @@ function Test-IsMappedMessageRecent {
 function Initialize-OffsetFromLatestUpdates {
     param(
         [Parameter(Mandatory=$true)][string]$BotToken,
-        [bool]$SkipBacklog = $true
+        [bool]$SkipBacklog = $true,
+        [string[]]$AllowedUpdates = @('message', 'message_reaction')
     )
 
     if (-not $SkipBacklog) {
@@ -143,7 +144,8 @@ function Initialize-OffsetFromLatestUpdates {
     }
 
     try {
-        $allowedUpdates = [System.Uri]::EscapeDataString('["message","message_reaction"]')
+        $allowedUpdatesJson = $AllowedUpdates | ConvertTo-Json -Compress
+        $allowedUpdates = [System.Uri]::EscapeDataString($allowedUpdatesJson)
         $uri = "https://api.telegram.org/bot$BotToken/getUpdates?timeout=0&limit=100&allowed_updates=$allowedUpdates"
         $resp = Invoke-RestMethod -Uri $uri -Method Get -ErrorAction Stop
         if ($resp.ok -and $resp.result -and @($resp.result).Count -gt 0) {
@@ -464,6 +466,23 @@ if (-not $botToken) {
 
 Ensure-InvalidNoticeLogFile
 
+$allowedUpdateTypes = @('message', 'callback_query', 'message_reaction', 'my_chat_member')
+$allowedUpdatesJson = $allowedUpdateTypes | ConvertTo-Json -Compress
+$allowedUpdatesEscaped = [System.Uri]::EscapeDataString($allowedUpdatesJson)
+
+try {
+    $webhookInfo = Get-TelegramWebhookInfoDeterministic -BotToken $botToken
+    if ($webhookInfo -and -not [string]::IsNullOrWhiteSpace("$($webhookInfo.url)")) {
+        Write-Host "Webhook is currently active for this bot: $($webhookInfo.url)"
+        Write-Host "Polling listener aborted to avoid conflict."
+        Write-Host "Remediation: disable webhook first (deleteWebhook), then rerun this listener."
+        exit 1
+    }
+} catch {
+    Write-Host "Failed to validate webhook state before polling startup: $_"
+    exit 1
+}
+
 try {
     $requiredMenuCommands = @(
         @{ command = 'start'; description = 'Initialize chat and show current status' },
@@ -519,14 +538,23 @@ try {
     Write-Host "Failed to register Telegram bot menu commands: $_"
 }
 
-Initialize-OffsetFromLatestUpdates -BotToken $botToken -SkipBacklog $SkipBacklogOnStart
+Initialize-OffsetFromLatestUpdates -BotToken $botToken -SkipBacklog $SkipBacklogOnStart -AllowedUpdates $allowedUpdateTypes
 
-Write-Host "Starting Telegram reaction listener (chat_id=$ChatId, once=$Once, skipBacklogOnStart=$SkipBacklogOnStart)"
+$startupLog = [ordered]@{
+    event = 'listener_start'
+    mode = 'polling'
+    chat_id = "$ChatId"
+    once = [bool]$Once
+    skip_backlog_on_start = [bool]$SkipBacklogOnStart
+    poll_interval_seconds = $PollIntervalSeconds
+    allowed_updates = $allowedUpdateTypes
+    started_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+} | ConvertTo-Json -Compress
+Write-Host $startupLog
 
 while ($true) {
     $offset = Get-Offset
-    $allowedUpdates = [System.Uri]::EscapeDataString('["message","message_reaction"]')
-    $uri = "https://api.telegram.org/bot$botToken/getUpdates?timeout=20&offset=$offset&allowed_updates=$allowedUpdates"
+    $uri = "https://api.telegram.org/bot$botToken/getUpdates?timeout=20&offset=$offset&allowed_updates=$allowedUpdatesEscaped"
 
     try {
         $updatesResp = Invoke-RestMethod -Uri $uri -Method Get -ErrorAction Stop
@@ -611,6 +639,28 @@ while ($true) {
                         } catch {}
                     }
                 }
+            }
+
+            if ($u.callback_query) {
+                $callbackId = "$($u.callback_query.id)"
+                $callbackData = "$($u.callback_query.data)"
+                $callbackChat = ''
+                if ($u.callback_query.message -and $u.callback_query.message.chat -and $u.callback_query.message.chat.id) {
+                    $callbackChat = "$($u.callback_query.message.chat.id)"
+                }
+
+                try {
+                    Send-TelegramAnswerCallbackDeterministic -BotToken $botToken -CallbackQueryId $callbackId | Out-Null
+                } catch {
+                    Write-Host "Failed to answer callback_query id=${callbackId}: $_"
+                }
+
+                if ($callbackChat -and $callbackChat -ne "$ChatId") {
+                    continue
+                }
+
+                Write-Host "Received callback_query id=$callbackId data='$callbackData'"
+                continue
             }
 
             if ($u.message) {

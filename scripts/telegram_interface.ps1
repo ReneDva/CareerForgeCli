@@ -285,3 +285,72 @@ function Get-TelegramBotCommandsDeterministic {
 
     return @()
 }
+
+function Get-TelegramWebhookInfoDeterministic {
+    param(
+        [Parameter(Mandatory=$true)][string]$BotToken,
+        [int]$MaxRetries = 3,
+        [int]$RetryDelaySeconds = 2
+    )
+
+    $uri = "https://api.telegram.org/bot$BotToken/getWebhookInfo"
+
+    $attempt = 1
+    while ($attempt -le $MaxRetries) {
+        try {
+            $resp = Invoke-RestMethod -Uri $uri -Method Get -ErrorAction Stop
+            if ($resp.ok -and $resp.result) {
+                return $resp.result
+            }
+            return $null
+        } catch {
+            if ($attempt -ge $MaxRetries) {
+                throw
+            }
+            Start-Sleep -Seconds $RetryDelaySeconds
+            $attempt += 1
+        }
+    }
+
+    return $null
+}
+
+function Send-TelegramAnswerCallbackDeterministic {
+    param(
+        [Parameter(Mandatory=$true)][string]$BotToken,
+        [Parameter(Mandatory=$true)][string]$CallbackQueryId,
+        [string]$Text,
+        [bool]$ShowAlert = $false,
+        [int]$MaxRetries = 3,
+        [int]$RetryDelaySeconds = 2
+    )
+
+    $uri = "https://api.telegram.org/bot$BotToken/answerCallbackQuery"
+    $headers = @{ 'Content-Type' = 'application/json' }
+
+    $payload = @{
+        callback_query_id = $CallbackQueryId
+        show_alert = $ShowAlert
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Text)) {
+        $payload.text = $Text
+    }
+
+    $body = $payload | ConvertTo-Json -Depth 8
+
+    $attempt = 1
+    while ($attempt -le $MaxRetries) {
+        try {
+            $resp = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -ErrorAction Stop
+            return $resp
+        } catch {
+            if ($attempt -ge $MaxRetries) {
+                throw
+            }
+            Start-Sleep -Seconds $RetryDelaySeconds
+            $attempt += 1
+        }
+    }
+
+    return $null
+}
