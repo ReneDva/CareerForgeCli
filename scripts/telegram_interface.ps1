@@ -150,6 +150,41 @@ function Send-TelegramTextDeterministic {
     }
 }
 
+function Send-TelegramTextWithReplyMarkupDeterministic {
+    param(
+        [Parameter(Mandatory=$true)][string]$BotToken,
+        [Parameter(Mandatory=$true)][string]$ChatId,
+        [Parameter(Mandatory=$true)][string]$Text,
+        [Parameter(Mandatory=$true)]$ReplyMarkup,
+        [int]$MaxRetries = 3,
+        [int]$RetryDelaySeconds = 2,
+        [string]$ParseMode = 'HTML'
+    )
+
+    $uri = "https://api.telegram.org/bot$BotToken/sendMessage"
+    $headers = @{ 'Content-Type' = 'application/json' }
+    $body = @{
+        chat_id = $ChatId
+        text = $Text
+        parse_mode = $ParseMode
+        reply_markup = $ReplyMarkup
+    } | ConvertTo-Json -Depth 10
+
+    $attempt = 1
+    while ($attempt -le $MaxRetries) {
+        try {
+            $resp = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -ErrorAction Stop
+            return $resp
+        } catch {
+            if ($attempt -ge $MaxRetries) {
+                throw
+            }
+            Start-Sleep -Seconds $RetryDelaySeconds
+            $attempt += 1
+        }
+    }
+}
+
 function Send-TelegramDocumentDeterministic {
     param(
         [Parameter(Mandatory=$true)][string]$BotToken,

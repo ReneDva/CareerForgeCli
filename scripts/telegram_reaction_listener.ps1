@@ -16,6 +16,7 @@ $jobsFoundPath = Join-Path $workspaceRoot 'jobs_found.json'
 $jobsRawPath = Join-Path $workspaceRoot 'jobs.json'
 $offsetPath = Join-Path $workspaceRoot 'memory/telegram_update_offset.txt'
 $invalidNoticeLogPath = Join-Path $workspaceRoot 'memory/telegram_invalid_notice_log.csv'
+$modelStatePath = Join-Path $workspaceRoot 'memory/telegram_model_state.json'
 $invalidReactionCooldownSeconds = 120
 $script:InvalidReactionNoticeCache = @{}
 
@@ -459,6 +460,159 @@ function Get-OpenClawPathsMessage {
     return ($lines -join "`n")
 }
 
+function Get-ModelOptions {
+    return @(
+        [PSCustomObject]@{ id = 'google/gemini-3-pro-preview'; label = 'Gemini 3 Pro Preview'; short = '3-pro-preview' },
+        [PSCustomObject]@{ id = 'google/gemini-2.5-pro'; label = 'Gemini 2.5 Pro'; short = '2.5-pro' },
+        [PSCustomObject]@{ id = 'google/gemini-2.0-flash'; label = 'Gemini 2.0 Flash'; short = '2.0-flash' }
+    )
+}
+
+function Ensure-ModelStateFile {
+    if (-not (Test-Path $modelStatePath)) {
+        $seed = @{ by_chat = @{} } | ConvertTo-Json -Depth 6
+        Set-Content -Path $modelStatePath -Value $seed -Encoding UTF8
+    }
+}
+
+function Get-ModelState {
+    Ensure-ModelStateFile
+    try {
+        $raw = Get-Content $modelStatePath -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return @{ by_chat = @{} }
+        }
+
+        $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $parsed.by_chat) {
+            $parsed | Add-Member -NotePropertyName by_chat -NotePropertyValue @{} -Force
+        }
+        return $parsed
+    } catch {
+        return @{ by_chat = @{} }
+    }
+}
+
+function Save-ModelState {
+    param([Parameter(Mandatory=$true)]$State)
+    $json = $State | ConvertTo-Json -Depth 10
+    Set-Content -Path $modelStatePath -Value $json -Encoding UTF8
+}
+
+function Resolve-DefaultModel {
+    $options = Get-ModelOptions
+    if ($env:OPENCLAW_ACTIVE_MODEL -and @($options | Where-Object { "$($_.id)" -eq "$($env:OPENCLAW_ACTIVE_MODEL)" }).Count -gt 0) {
+        return "$($env:OPENCLAW_ACTIVE_MODEL)"
+    }
+    return "$($options[0].id)"
+}
+
+function Get-ActiveModelForChat {
+    param([Parameter(Mandatory=$true)][string]$ChatId)
+
+    $state = Get-ModelState
+    $selected = $null
+    if ($state.by_chat) {
+        $selected = $state.by_chat.$ChatId
+    }
+
+    $options = Get-ModelOptions
+    $validSelected = @($options | Where-Object { "$($_.id)" -eq "$selected" } | Select-Object -First 1)
+    if ($validSelected.Count -gt 0) {
+        return "$selected"
+    }
+
+    return Resolve-DefaultModel
+}
+
+function Set-ActiveModelForChat {
+    param(
+        [Parameter(Mandatory=$true)][string]$ChatId,
+        [Parameter(Mandatory=$true)][string]$ModelId
+    )
+
+    $options = Get-ModelOptions
+    $exists = @($options | Where-Object { "$($_.id)" -eq "$ModelId" }).Count -gt 0
+    if (-not $exists) {
+        throw "Unknown model id: $ModelId"
+    }
+
+    $state = Get-ModelState
+    if ($null -eq $state.by_chat) {
+        $state | Add-Member -NotePropertyName by_chat -NotePropertyValue @{} -Force
+    }
+
+    $state.by_chat | Add-Member -NotePropertyName $ChatId -NotePropertyValue $ModelId -Force
+    Save-ModelState -State $state
+}
+
+function Get-ModelLabelById {
+    param([Parameter(Mandatory=$true)][string]$ModelId)
+    $row = Get-ModelOptions | Where-Object { "$($_.id)" -eq "$ModelId" } | Select-Object -First 1
+    if ($row) { return "$($row.label)" }
+    return $ModelId
+}
+
+function Get-ModelStatusMessage {
+    param([Parameter(Mandatory=$true)][string]$ChatId)
+
+    $activeModel = Get-ActiveModelForChat -ChatId $ChatId
+    $activeLabel = Get-ModelLabelById -ModelId $activeModel
+    $fallbackChain = @(
+        'google/gemini-3-pro-preview',
+        'google/gemini-2.5-pro',
+        'google/gemini-2.0-flash'
+    )
+
+    $activeEsc = [System.Security.SecurityElement]::Escape($activeModel)
+    $activeLabelEsc = [System.Security.SecurityElement]::Escape($activeLabel)
+    $fallbackEsc = [System.Security.SecurityElement]::Escape(($fallbackChain -join ' -> '))
+
+    $lines = @()
+    $lines += "&#129504; <b>Model status</b>"
+    $lines += "Active: <b>$activeLabelEsc</b>"
+    $lines += "ID: <code>$activeEsc</code>"
+    $lines += "Fallback chain: <code>$fallbackEsc</code>"
+    $lines += "Tip: use <code>/models</code> to pick a model quickly."
+    return ($lines -join "`n")
+}
+
+function Get-ModelsKeyboardMarkup {
+    param([Parameter(Mandatory=$true)][string]$ChatId)
+
+    $activeModel = Get-ActiveModelForChat -ChatId $ChatId
+    $rows = @()
+    foreach ($m in Get-ModelOptions) {
+        $isActive = "$($m.id)" -eq "$activeModel"
+        $label = if ($isActive) { "ACTIVE: $($m.label)" } else { "$($m.label)" }
+        $rows += ,@(@{ text = $label; callback_data = "cf_model_set|$($m.id)" })
+    }
+    $rows += ,@(@{ text = 'Model status'; callback_data = 'cf_model_status' })
+
+    return @{ inline_keyboard = $rows }
+}
+
+function Resolve-ModelInput {
+    param([Parameter(Mandatory=$true)][string]$RawInput)
+
+    $value = "$RawInput".Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $null
+    }
+
+    foreach ($m in Get-ModelOptions) {
+        if ("$($m.id)".ToLowerInvariant() -eq $value) { return "$($m.id)" }
+        if ("$($m.short)".ToLowerInvariant() -eq $value) { return "$($m.id)" }
+    }
+
+    switch ($value) {
+        '3' { return 'google/gemini-3-pro-preview' }
+        '2.5' { return 'google/gemini-2.5-pro' }
+        '2' { return 'google/gemini-2.0-flash' }
+        default { return $null }
+    }
+}
+
 $botToken = Get-TelegramBotToken -WorkspaceRoot $workspaceRoot
 if (-not $botToken) {
     Write-Host 'TELEGRAM_BOT_TOKEN not found in .env or environment.'
@@ -660,6 +814,41 @@ while ($true) {
                     continue
                 }
 
+                if ($callbackData -eq 'cf_model_status') {
+                    try {
+                        $statusMsg = Get-ModelStatusMessage -ChatId "$ChatId"
+                        Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $statusMsg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                    } catch {
+                        Write-Host "Failed to send callback model status: $_"
+                    }
+                    continue
+                }
+
+                if ($callbackData -like 'cf_model_set|*') {
+                    $parts = "$callbackData" -split '\|', 2
+                    $requestedModel = if ($parts.Count -ge 2) { "$($parts[1])" } else { '' }
+                    try {
+                        $resolved = Resolve-ModelInput -RawInput $requestedModel
+                        if (-not $resolved) {
+                            throw "Unsupported model callback data: $callbackData"
+                        }
+
+                        Set-ActiveModelForChat -ChatId "$ChatId" -ModelId $resolved
+                        $label = Get-ModelLabelById -ModelId $resolved
+                        $labelEsc = [System.Security.SecurityElement]::Escape($label)
+                        $idEsc = [System.Security.SecurityElement]::Escape($resolved)
+                        $confirm = "&#9989; Active model updated to <b>$labelEsc</b>`n<code>$idEsc</code>"
+                        Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $confirm -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                    } catch {
+                        Write-Host "Failed to process model selection callback: $_"
+                        try {
+                            $errMsg = "&#9888;&#65039; Could not update model from selection. Please try <code>/models</code> again."
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $errMsg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {}
+                    }
+                    continue
+                }
+
                 Write-Host "Received callback_query id=$callbackId data='$callbackData'"
                 continue
             }
@@ -690,6 +879,60 @@ while ($true) {
                             Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
                         } catch {
                             Write-Host "Failed to send /paths response: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/models' -or $text -like '/models@*') {
+                        try {
+                            $activeId = Get-ActiveModelForChat -ChatId "$ChatId"
+                            $activeLabel = Get-ModelLabelById -ModelId $activeId
+                            $activeLabelEsc = [System.Security.SecurityElement]::Escape($activeLabel)
+                            $activeIdEsc = [System.Security.SecurityElement]::Escape($activeId)
+                            $msg = "&#129504; <b>Select active model</b>`nCurrent: <b>$activeLabelEsc</b> (<code>$activeIdEsc</code>)"
+                            $kb = Get-ModelsKeyboardMarkup -ChatId "$ChatId"
+                            Send-TelegramTextWithReplyMarkupDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -ReplyMarkup $kb -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to send /models response: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/model' -or $text -like '/model@*' -or $text -like '/model *' -or $text -like '/model@* *') {
+                        try {
+                            $commandText = $text
+                            if ($commandText -like '/model@* *') {
+                                $commandText = ($commandText -replace '^/model@[^\s]+\s+', '/model ')
+                            } elseif ($commandText -like '/model@*') {
+                                $commandText = '/model'
+                            }
+
+                            $arg = ''
+                            if ($commandText -match '^/model\s+(.+)$') {
+                                $arg = "$($matches[1])".Trim()
+                            }
+
+                            if ([string]::IsNullOrWhiteSpace($arg) -or $arg.ToLowerInvariant() -eq 'status') {
+                                $statusMsg = Get-ModelStatusMessage -ChatId "$ChatId"
+                                Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $statusMsg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                                continue
+                            }
+
+                            $resolvedModel = Resolve-ModelInput -RawInput $arg
+                            if (-not $resolvedModel) {
+                                $hint = "&#9888;&#65039; Unknown model: <code>$([System.Security.SecurityElement]::Escape($arg))</code>`nUse <code>/models</code> to choose, or <code>/model status</code>."
+                                Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $hint -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                                continue
+                            }
+
+                            Set-ActiveModelForChat -ChatId "$ChatId" -ModelId $resolvedModel
+                            $label = Get-ModelLabelById -ModelId $resolvedModel
+                            $labelEsc = [System.Security.SecurityElement]::Escape($label)
+                            $idEsc = [System.Security.SecurityElement]::Escape($resolvedModel)
+                            $msg = "&#9989; Active model set to <b>$labelEsc</b>`n<code>$idEsc</code>"
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /model command: $_"
                         }
                         continue
                     }
