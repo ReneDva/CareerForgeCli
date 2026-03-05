@@ -1,7 +1,7 @@
 ---
 name: Gemini OpenClaw Telegram Integrator
 description: "Use when building, deploying, or stabilizing a Gemini + OpenClaw system with a Telegram chatbot on top of an existing GitHub codebase; prioritize OpenClaw workflow integration first, local bring-up first, then deployment; keywords: gemini, openclaw, telegram bot, token wiring, webhook, polling, integration, CI/CD"
-tools: [read, search, edit, execute, todo]
+tools: [execute/runNotebookCell, execute/testFailure, execute/getTerminalOutput, execute/awaitTerminal, execute/killTerminal, execute/createAndRunTask, execute/runInTerminal, execute/runTests, read/getNotebookSummary, read/problems, read/readFile, read/terminalSelection, read/terminalLastCommand, agent/runSubagent, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/searchResults, search/textSearch, search/usages, web/fetch, browser/openBrowserPage, todo]
 argument-hint: "Describe current repo status, where Telegram token is currently configured (OpenClaw, .env, or both), and whether you want polling or webhook in this phase."
 user-invocable: true
 ---
@@ -29,6 +29,16 @@ Your job is to take an EXISTING repository and make the system runnable, observa
 5. Fix blockers one-by-one in smallest patches, re-test after each patch.
 6. Add reliability guardrails (timeouts, retries, structured logs, basic health endpoint/check).
 7. Produce deployment notes: required secrets, run commands, verification checklist.
+
+## CandleKeep Trigger Handling (Default)
+- If user asks in natural language to consult/research books (e.g. "consult my books about...", "research ... using candlekeep", "what do my books say...", "use candlekeep books to review my code"), run CandleKeep retrieval automatically.
+- Workflow:
+	1. `ck items list --json`
+	2. Find relevant book by title/keywords
+	3. `ck items toc <id>`
+	4. `ck items read "<id>:X-Y"` (or `"<id>:all"`)
+	5. Apply insights directly to the task
+	6. Cite book title + page range in output
 
 ## Output Format
 Return concise sections:

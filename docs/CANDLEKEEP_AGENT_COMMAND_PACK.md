@@ -7,6 +7,12 @@
 - לשלוף מידע מדויק
 - להשתמש בתוכן כדי לבצע משימות פיתוח, אבטחה, פרומפטינג ועוד
 
+Trigger this flow automatically when user phrasing is similar to:
+- "consult my books about [topic]"
+- "research [topic] using candlekeep"
+- "what do my books say about [topic]?"
+- "use candlekeep books to review my code"
+
 ---
 
 ## 🧠 פקודות בסיסיות
@@ -26,7 +32,8 @@
 ### 📖 Reading
 
 - `ck items read <id>`
-- `ck items read <id> --pages "1-5"`
+- `ck items read "<id>:1-5"`
+- `ck items read "<id>:all"`
 - `ck items toc <id>`
 
 ### 🧾 Output Options
@@ -51,7 +58,7 @@ Use the following workflow whenever you need domain knowledge:
    ck items toc <id>
 
 4. Read specific pages or sections:
-   ck items read <id> --pages "1-20"
+   ck items read "<id>:1-20"
 
 5. Extract insights, summarize them, and apply them to the task.
 

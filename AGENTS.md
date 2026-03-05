@@ -121,11 +121,19 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 
 When domain knowledge is needed, use CandleKeep as the primary source **before** generic web search.
 
+If a user asks in natural language with phrases like:
+- "consult my books about [topic]"
+- "research [topic] using candlekeep"
+- "what do my books say about [topic]?"
+- "use candlekeep books to review my code"
+
+Treat this as a **direct CandleKeep retrieval command** and run the workflow below automatically.
+
 Default workflow:
 1. `ck items list --json`
 2. Locate relevant book by title/keywords
 3. `ck items toc <id>`
-4. `ck items read <id> --pages "X-Y"`
+4. `ck items read "<id>:X-Y"` (or `"<id>:all"`)
 5. Extract insights and apply directly to the task
 6. Cite which book + pages were used in your output
 
