@@ -29,6 +29,8 @@ dist-ssr
 jobs.json
 current_job_desc.txt
 memory/telegram_model_state.json
+tests/reports/*
+!tests/reports/.gitkeep
 
 # Python local environments
 python_env
