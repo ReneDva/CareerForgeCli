@@ -43,6 +43,23 @@ Trigger this flow automatically when user phrasing is similar to:
 
 ---
 
+## 🛠️ Troubleshooting (Windows + VS Code)
+
+If `ck` works in external CMD/PowerShell but fails in VS integrated terminal:
+
+1. Verify executable location:
+   - `Get-Command ck`
+   - expected example: `C:\Users\rened\.cargo\bin\ck.exe`
+2. Ensure this folder is in user PATH:
+   - `C:\Users\rened\.cargo\bin`
+3. Restart VS Code after PATH changes.
+4. For Git Bash, optionally force path in `~/.bashrc`:
+   - `export PATH="/c/Users/rened/.cargo/bin:$PATH"`
+5. Immediate fallback (no PATH dependency):
+   - `/c/Users/rened/.cargo/bin/ck.exe items list --json`
+
+---
+
 ## 📘 הנחיות לסוכן: איך להשתמש בפקודות כדי לקרוא ספרים
 
 ```text

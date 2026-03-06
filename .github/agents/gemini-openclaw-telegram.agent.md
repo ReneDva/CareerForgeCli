@@ -32,6 +32,7 @@ Your job is to take an EXISTING repository and make the system runnable, observa
 
 ## CandleKeep Trigger Handling (Default)
 - If user asks in natural language to consult/research books (e.g. "consult my books about...", "research ... using candlekeep", "what do my books say...", "use candlekeep books to review my code"), run CandleKeep retrieval automatically.
+- On Windows/VS integrated terminals, if `ck` is not found in PATH, try known fallback path first: `C:\Users\rened\.cargo\bin\ck.exe` (or `/c/Users/rened/.cargo/bin/ck.exe` in bash).
 - Workflow:
 	1. `ck items list --json`
 	2. Find relevant book by title/keywords
@@ -39,6 +40,14 @@ Your job is to take an EXISTING repository and make the system runnable, observa
 	4. `ck items read "<id>:X-Y"` (or `"<id>:all"`)
 	5. Apply insights directly to the task
 	6. Cite book title + page range in output
+
+## CV Guardrails Policy (CareerForge)
+- Treat `profile.md` as canonical baseline source.
+- Preserve immutable facts: name, contact details, locked links, and education core facts (degree/program, institution, years).
+- Allow rewriting only in professional descriptive content (summary/skills/experience/project bullet wording).
+- Block additions of new personal identifiers (city/residence/address) unless explicitly present in baseline.
+- Enforce strict link integrity via placeholders + exact restoration to avoid replacing project links with generic profile/homepage links.
+- Avoid over-strict validation on every education bullet; validate core facts only to prevent false generation failures.
 
 ## Output Format
 Return concise sections:

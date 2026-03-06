@@ -15,7 +15,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import 'dotenv/config';
 import puppeteer from 'puppeteer';
-import { generateApplicationAssets, refineResume } from './gemini';
+import type { Page } from 'puppeteer';
+import { enforceOnePageResume, generateApplicationAssets, refineResume } from './gemini';
 
 const program = new Command();
 
@@ -146,6 +147,27 @@ const THEMES: Record<string, { css: string }> = {
     minimal: { css: `body { font-family: monospace !important; font-size: 10pt !important; }` }
 };
 
+const mmToPx = (mm: number): number => (mm * 96) / 25.4;
+const MAX_ONE_PAGE_COMPACTION_ATTEMPTS = 2;
+
+async function estimateA4PageCount(page: Page): Promise<number> {
+    await page.emulateMediaType('print');
+    const printableHeightPx = mmToPx(297 - 20); // assume ~10mm top + ~10mm bottom margin
+    const contentHeight = await page.evaluate(() => {
+        const body = document.body;
+        const html = document.documentElement;
+        return Math.max(
+            body?.scrollHeight || 0,
+            body?.offsetHeight || 0,
+            html?.clientHeight || 0,
+            html?.scrollHeight || 0,
+            html?.offsetHeight || 0
+        );
+    });
+
+    return Math.max(1, Math.ceil(contentHeight / printableHeightPx));
+}
+
 // --- CLI COMMANDS ---
 
 program
@@ -163,6 +185,7 @@ program
     .option('-t, --theme <name>', 'Theme (original, modern, serif, minimal)', 'modern')
     .option('-m, --model <id>', 'Model override (must be in allowlist, e.g. google/gemini-2.5-pro)')
     .option('--no-strict-link-integrity', 'Allow generation to continue even when locked profile links are missing in output')
+    .option('--no-strict-one-page', 'Allow PDF generation even if rendered CV exceeds one A4 page')
     .action(async (options) => {
         const apiKey = process.env.GEMINI_API_KEY || "GATEWAY_MANAGED";
         try {
@@ -178,8 +201,9 @@ program
             const profile = { content: profileContent };
             const selectedModel = options.model ? String(options.model).trim() : undefined;
             const strictLinkIntegrity = options.strictLinkIntegrity !== false;
+            const strictOnePage = options.strictOnePage !== false;
 
-            console.log(`🚀 Gemini is crafting your executive resume${selectedModel ? ` (model: ${selectedModel})` : ''}${strictLinkIntegrity ? ' [strict-link-integrity]' : ' [link-integrity-warn-only]'}...`);
+            console.log(`🚀 Gemini is crafting your executive resume${selectedModel ? ` (model: ${selectedModel})` : ''}${strictLinkIntegrity ? ' [strict-link-integrity]' : ' [link-integrity-warn-only]'}${strictOnePage ? ' [strict-one-page]' : ' [one-page-warn-only]'}...`);
             const generated = await generateApplicationAssets(profile, jobDetails, apiKey, selectedModel, strictLinkIntegrity);
 
             console.log("🛠️ Performing surgical refinement for ATS optimization...");
@@ -194,6 +218,25 @@ program
             const browser = await puppeteer.launch({ headless: true });
             const page = await browser.newPage();
             await page.setContent(finalHtml, { waitUntil: 'networkidle0' });
+
+            let estimatedPageCount = await estimateA4PageCount(page);
+            if (estimatedPageCount > 1 && strictOnePage) {
+                for (let attempt = 1; attempt <= MAX_ONE_PAGE_COMPACTION_ATTEMPTS && estimatedPageCount > 1; attempt++) {
+                    console.log(`📉 One-page guardrail: compaction attempt ${attempt}/${MAX_ONE_PAGE_COMPACTION_ATTEMPTS}...`);
+                    finalHtml = await enforceOnePageResume(finalHtml, jobDetails, profile, apiKey, selectedModel, strictLinkIntegrity);
+                    await page.setContent(finalHtml, { waitUntil: 'networkidle0' });
+                    estimatedPageCount = await estimateA4PageCount(page);
+                }
+            }
+
+            if (estimatedPageCount > 1) {
+                const msg = `Rendered CV exceeds one A4 page (estimated pages: ${estimatedPageCount}) after compaction attempts.`;
+                if (strictOnePage) {
+                    await browser.close();
+                    throw new Error(msg);
+                }
+                console.warn(`⚠️ ${msg}`);
+            }
 
             const finalOutputPath = getSafeOutputPath(options.out);
             await page.pdf({

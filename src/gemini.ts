@@ -22,6 +22,14 @@ const ALLOWED_MODEL_ALIASES: Record<string, string> = {
 type LockedLink = {
     label: string;
     url: string;
+    placeholder: string;
+};
+
+type PersonalGuardrails = {
+    requiredTokens: string[];
+    sourceHasAddressTerms: boolean;
+    sourceHasResidenceTerms: boolean;
+    educationCoreFacts: string[];
 };
 
 function extractLockedLinksFromMarkdown(markdown: string): LockedLink[] {
@@ -42,11 +50,236 @@ function extractLockedLinksFromMarkdown(markdown: string): LockedLink[] {
         const dedupeKey = `${label.toLowerCase()}|${url.toLowerCase()}`;
         if (!seen.has(dedupeKey)) {
             seen.add(dedupeKey);
-            links.push({ label, url });
+            links.push({
+                label,
+                url,
+                placeholder: `__LOCKED_LINK_${links.length + 1}__`
+            });
         }
     }
 
     return links;
+}
+
+function applyLinkPlaceholdersToText(text: string, lockedLinks: LockedLink[]): string {
+    let output = text;
+    for (const link of lockedLinks) {
+        output = output.split(link.url).join(link.placeholder);
+    }
+    return output;
+}
+
+function restoreLinkPlaceholdersInText(text: string, lockedLinks: LockedLink[]): string {
+    let output = text;
+    for (const link of lockedLinks) {
+        output = output.split(link.placeholder).join(link.url);
+    }
+    return output;
+}
+
+function extractImmutablePersonalBlock(markdown: string): string {
+    if (!markdown || !markdown.trim()) {
+        return '';
+    }
+
+    const firstSeparator = markdown.indexOf('\n---');
+    if (firstSeparator <= 0) {
+        return markdown.trim();
+    }
+    return markdown.slice(0, firstSeparator).trim();
+}
+
+function extractSection(markdown: string, sectionTitle: string): string {
+    if (!markdown || !markdown.trim()) {
+        return '';
+    }
+
+    const escaped = sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(^|\\n)##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, 'i');
+    const match = markdown.match(regex);
+    return match && match[2] ? match[2].trim() : '';
+}
+
+function normalizeToken(s: string): string {
+    return s.replace(/\s+/g, ' ').trim();
+}
+
+function canonicalizeFactText(s: string): string {
+    return s
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/[\u2012\u2013\u2014\u2015]/g, '-')
+        .replace(/\s*\|\s*/g, ' | ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+function tokenizeWords(s: string): string[] {
+    return canonicalizeFactText(s)
+        .split(/[^a-z0-9]+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 3);
+}
+
+function hasEducationFactMatch(canonicalHtml: string, fact: string): boolean {
+    const canonicalFact = canonicalizeFactText(fact);
+    if (!canonicalFact) {
+        return true;
+    }
+
+    // Fast path: exact normalized substring
+    if (canonicalHtml.includes(canonicalFact)) {
+        return true;
+    }
+
+    // Loose path: years + significant tokens coverage
+    const htmlWordSet = new Set(tokenizeWords(canonicalHtml));
+    const factWords = tokenizeWords(canonicalFact);
+    const yearMatches = canonicalFact.match(/\b(19|20)\d{2}\b/g) || [];
+
+    const missingYear = yearMatches.some((year) => !canonicalHtml.includes(year));
+    if (yearMatches.length > 0 && missingYear) {
+        return false;
+    }
+
+    if (factWords.length === 0) {
+        return yearMatches.length === 0 || !missingYear;
+    }
+
+    const stopWords = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'of', 'in']);
+    const meaningful = factWords.filter((w) => !stopWords.has(w));
+    const sourceWords = meaningful.length > 0 ? meaningful : factWords;
+
+    let hit = 0;
+    for (const w of sourceWords) {
+        if (htmlWordSet.has(w)) {
+            hit++;
+        }
+    }
+
+    const requiredHits = Math.max(2, Math.ceil(sourceWords.length * 0.6));
+    return hit >= requiredHits;
+}
+
+function extractImmutableEducationCoreFacts(markdown: string): string[] {
+    const educationSection = extractSection(markdown, 'Education');
+    if (!educationSection) {
+        return [];
+    }
+
+    const tokens = new Set<string>();
+    const lines = educationSection.split(/\r?\n/).map((l) => l.trim()).filter((l) => !!l);
+
+    for (const line of lines) {
+        const isLikelyHeading = /^#{2,6}\s+/.test(line) || /^\*\*[^*]+\*\*$/.test(line);
+        if (!isLikelyHeading) continue;
+
+        const cleaned = normalizeToken(
+            line
+                .replace(/^[\s#*\-]+/, '')
+                .replace(/^#{1,6}\s*/, '')
+                .replace(/\*\*/g, '')
+                .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        );
+
+        if (!cleaned) continue;
+        if (/selected\s+academic\s*&\s*personal\s+projects?/i.test(cleaned)) continue;
+        if (/^\d{4}\s*[\-–]\s*\d{4}\s*$/i.test(cleaned)) continue;
+
+        const hasStudyKeywords = /\b(b\.?sc\.?|msc|phd|track|program|college|university|academic|computer science|engineering|seminary|high school|school)\b/i.test(cleaned);
+        const hasYearPattern = /\b(19|20)\d{2}\b/.test(cleaned);
+        const hasInstitutionDelimiter = /\|/.test(cleaned);
+
+        if (hasStudyKeywords || (hasYearPattern && hasInstitutionDelimiter)) {
+            if (cleaned.length >= 4) {
+                tokens.add(cleaned);
+            }
+        }
+    }
+
+    return Array.from(tokens).slice(0, 12);
+}
+
+function buildPersonalGuardrails(markdown: string): PersonalGuardrails {
+    const immutableBlock = extractImmutablePersonalBlock(markdown);
+    const tokens = new Set<string>();
+
+    const emailMatches = immutableBlock.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+    for (const m of emailMatches) {
+        tokens.add(m.trim());
+    }
+
+    const phoneMatches = immutableBlock.match(/\+?\d[\d\s\-()]{6,}\d/g) || [];
+    for (const m of phoneMatches) {
+        tokens.add(m.trim());
+    }
+
+    const nameLine = immutableBlock
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^#+\s*/, '').trim())
+        .find((line) => !!line);
+    if (nameLine) {
+        tokens.add(nameLine);
+    }
+
+    const sourceHasAddressTerms = /\b(address|city|residence|living in|located in|location)\b/i.test(immutableBlock);
+    const sourceHasResidenceTerms = /\b(city|residence|living in|located in)\b/i.test(immutableBlock);
+
+    const educationCoreFacts = extractImmutableEducationCoreFacts(markdown);
+
+    return {
+        requiredTokens: Array.from(tokens).filter((t) => !!t),
+        sourceHasAddressTerms,
+        sourceHasResidenceTerms,
+        educationCoreFacts
+    };
+}
+
+function validatePersonalIntegrityOrThrow(
+    html: string,
+    guardrails: PersonalGuardrails,
+    strictLinkIntegrity: boolean
+): void {
+    const missingTokens = guardrails.requiredTokens.filter((token) => !html.includes(token));
+    if (missingTokens.length > 0) {
+        const msg = `Generated HTML is missing immutable personal/contact tokens: ${missingTokens.join(', ')}`;
+        if (strictLinkIntegrity) {
+            throw new Error(msg);
+        }
+        process.stderr.write(`[WARN] ${msg}\n`);
+    }
+
+    if (!guardrails.sourceHasAddressTerms) {
+        const hasInjectedAddressTerms = /\b(address|city|residence|living in|located in)\b\s*[:\-]?/i.test(html);
+        if (hasInjectedAddressTerms) {
+            const msg = 'Generated HTML appears to inject new personal location/address metadata that is not in baseline profile.';
+            if (strictLinkIntegrity) {
+                throw new Error(msg);
+            }
+            process.stderr.write(`[WARN] ${msg}\n`);
+        }
+    }
+
+    if (!guardrails.sourceHasResidenceTerms) {
+        const hasResidenceClaim = /\b(lives in|living in|resides in|based in)\b/i.test(html);
+        if (hasResidenceClaim) {
+            const msg = 'Generated HTML appears to add a residence/city claim that is not present in baseline profile.';
+            if (strictLinkIntegrity) {
+                throw new Error(msg);
+            }
+            process.stderr.write(`[WARN] ${msg}\n`);
+        }
+    }
+
+    const canonicalHtml = canonicalizeFactText(html);
+    const missingEducationFacts = guardrails.educationCoreFacts.filter((fact) => !hasEducationFactMatch(canonicalHtml, fact));
+    if (missingEducationFacts.length > 0) {
+        const msg = `Generated HTML is missing immutable education core facts: ${missingEducationFacts.join(', ')}`;
+        if (strictLinkIntegrity) {
+            throw new Error(msg);
+        }
+        process.stderr.write(`[WARN] ${msg}\n`);
+    }
 }
 
 function buildLockedLinksInstruction(lockedLinks: LockedLink[]): string {
@@ -166,11 +399,15 @@ export const generateApplicationAssets = async (
 
     const generatorModel = resolveAllowedModelOrThrow(modelOverride);
     const lockedLinks = extractLockedLinksFromMarkdown(profile.content);
+    const profileWithPlaceholders = applyLinkPlaceholdersToText(profile.content, lockedLinks);
     const lockedLinksInstruction = buildLockedLinksInstruction(lockedLinks);
+    const immutablePersonalBlock = extractImmutablePersonalBlock(profile.content);
+    const immutableEducationSection = extractSection(profile.content, 'Education');
+    const personalGuardrails = buildPersonalGuardrails(profile.content);
 
     const prompt = `
     TASK: Generate a high-impact, 1-page HTML resume using Gemini 2.5 Pro capabilities.
-    USER_PROFILE: ${profile.content}
+    USER_PROFILE: ${profileWithPlaceholders}
     TARGET_JOB: ${job.title} - ${job.description}
 
     CONSTRAINTS for Automation:
@@ -181,6 +418,27 @@ export const generateApplicationAssets = async (
 
     LINK INTEGRITY CONSTRAINTS:
     ${lockedLinksInstruction}
+
+    IMMUTABLE PERSONAL DATA BLOCK (DO NOT ALTER VALUES):
+    ${immutablePersonalBlock}
+
+    IMMUTABLE EDUCATION FACTS (DO NOT ALTER PROGRAM/INSTITUTION/YEARS/CAMPUS FACTS):
+    ${immutableEducationSection}
+
+    EDIT SCOPE CONSTRAINTS:
+    - You may tailor ONLY professional content sections (summary, skills, experience, projects, education wording).
+    - You MUST keep identity and contact facts unchanged (name, phone, email, links).
+    - Do NOT change factual entities in education (program/degree names, institution names, years, campus/city in education lines).
+    - Do NOT add new personal identifiers (city/residence/address, age, marital status, ID, nationality) unless explicitly present above.
+    - Keep all link placeholders exactly unchanged (e.g. __LOCKED_LINK_1__).
+
+    OUTPUT BUDGET CONSTRAINTS (for one-page reliability):
+    - Professional Summary: max 3 bullets, each <= 18 words.
+    - Technical Skills: max 5 grouped bullets.
+    - Work Experience: max 2 roles, each role max 2 bullets, each bullet <= 20 words.
+    - Projects: max 2 project bullets total.
+    - Education: preserve core facts, keep concise, max 1 supporting bullet per education entry.
+    - Keep total density suitable for exactly one A4 page.
 
     TRUTHFULNESS CONSTRAINTS:
     - Do NOT invent achievements, employers, dates, titles, links, repositories, education, or certifications.
@@ -204,8 +462,10 @@ export const generateApplicationAssets = async (
         const text = response.text;
         if (!text) throw new Error("Empty response from Gemini.");
         const parsed = JSON.parse(text) as GeneratedAssets;
-        validateLockedLinksInHtmlOrThrow(parsed.resumeHtml, lockedLinks, strictLinkIntegrity);
-        return parsed;
+        const restoredHtml = restoreLinkPlaceholdersInText(parsed.resumeHtml, lockedLinks);
+        validateLockedLinksInHtmlOrThrow(restoredHtml, lockedLinks, strictLinkIntegrity);
+        validatePersonalIntegrityOrThrow(restoredHtml, personalGuardrails, strictLinkIntegrity);
+        return { ...parsed, resumeHtml: restoredHtml };
     });
 };
 
@@ -222,18 +482,32 @@ export const refineResume = async (
     const ai = new GoogleGenAI({ apiKey });
     const judgeModel = resolveAllowedModelOrThrow(modelOverride);
     const lockedLinks = extractLockedLinksFromMarkdown(profile.content);
+    const profileWithPlaceholders = applyLinkPlaceholdersToText(profile.content, lockedLinks);
     const lockedLinksInstruction = buildLockedLinksInstruction(lockedLinks);
+    const personalGuardrails = buildPersonalGuardrails(profile.content);
+    const immutablePersonalBlock = extractImmutablePersonalBlock(profile.content);
+    const immutableEducationSection = extractSection(profile.content, 'Education');
+    const htmlWithPlaceholders = applyLinkPlaceholdersToText(currentHtml, lockedLinks);
     const prompt = `Surgically refine this Resume HTML to perfectly match the JD keywords: ${job.description}.
 
-Current HTML: ${currentHtml}
+Current HTML: ${htmlWithPlaceholders}
 
-SOURCE PROFILE: ${profile.content}
+SOURCE PROFILE: ${profileWithPlaceholders}
 
 CRITICAL CONSTRAINTS:
 ${lockedLinksInstruction}
+IMMUTABLE PERSONAL DATA BLOCK:
+${immutablePersonalBlock}
+IMMUTABLE EDUCATION FACTS:
+${immutableEducationSection}
 - Keep the existing structure and formatting style unless a change is required for factual correctness or ATS relevance.
+- Refine ONLY professional sections (summary/skills/experience/projects/education wording).
+- Preserve identity/contact values exactly; do not add city/address/residence unless explicitly present in source profile.
+- Do NOT change factual entities in education (program/degree names, institution names, years, campus/city in education lines).
 - Preserve existing links exactly when present and never replace a user-specific link with a generic home page.
-- Never add fabricated or exaggerated claims.`;
+- Keep all link placeholders exactly unchanged (e.g. __LOCKED_LINK_1__).
+- Never add fabricated or exaggerated claims.
+- Keep one-page density: remove redundancy, merge overlapping bullets, prioritize job-relevant content.`;
 
     return await withRetry(async () => {
         const response = await ai.models.generateContent({
@@ -249,8 +523,80 @@ ${lockedLinksInstruction}
         const cleanedHtml = response.text || "";
         // Extract HTML block using regex to avoid potential markdown wrap in response
         const htmlMatch = cleanedHtml.match(/(?:<!DOCTYPE html>|<html)[\s\S]*<\/html>/i);
-        const resultHtml = htmlMatch ? htmlMatch[0] : cleanedHtml.replace(/^\s*```html/, '').replace(/\s*```$/, '').trim();
+        const resultHtmlWithPlaceholders = htmlMatch ? htmlMatch[0] : cleanedHtml.replace(/^\s*```html/, '').replace(/\s*```$/, '').trim();
+        const resultHtml = restoreLinkPlaceholdersInText(resultHtmlWithPlaceholders, lockedLinks);
         validateLockedLinksInHtmlOrThrow(resultHtml, lockedLinks, strictLinkIntegrity);
+        validatePersonalIntegrityOrThrow(resultHtml, personalGuardrails, strictLinkIntegrity);
+        return resultHtml;
+    });
+};
+
+export const enforceOnePageResume = async (
+    currentHtml: string,
+    job: JobDetails,
+    profile: UserProfile,
+    apiKey: string,
+    modelOverride?: string,
+    strictLinkIntegrity: boolean = true
+): Promise<string> => {
+    if (!apiKey) throw new Error("API Key missing.");
+
+    const ai = new GoogleGenAI({ apiKey });
+    const model = resolveAllowedModelOrThrow(modelOverride);
+    const lockedLinks = extractLockedLinksFromMarkdown(profile.content);
+    const profileWithPlaceholders = applyLinkPlaceholdersToText(profile.content, lockedLinks);
+    const lockedLinksInstruction = buildLockedLinksInstruction(lockedLinks);
+    const personalGuardrails = buildPersonalGuardrails(profile.content);
+    const immutablePersonalBlock = extractImmutablePersonalBlock(profile.content);
+    const immutableEducationSection = extractSection(profile.content, 'Education');
+    const htmlWithPlaceholders = applyLinkPlaceholdersToText(currentHtml, lockedLinks);
+
+    const prompt = `Compress this resume HTML so it reliably fits one A4 page while preserving factual integrity.
+
+Current HTML:
+${htmlWithPlaceholders}
+
+Job context:
+${job.description}
+
+SOURCE PROFILE:
+${profileWithPlaceholders}
+
+CRITICAL CONSTRAINTS:
+${lockedLinksInstruction}
+IMMUTABLE PERSONAL DATA BLOCK:
+${immutablePersonalBlock}
+IMMUTABLE EDUCATION FACTS:
+${immutableEducationSection}
+- Keep all immutable facts unchanged.
+- Do not add city/residence/address unless explicitly present in source profile.
+- Keep all locked placeholders unchanged (e.g. __LOCKED_LINK_1__).
+- Keep professional impact but compress wording, merge bullets, remove redundancy, and prioritize job-relevant content.
+- Compaction budget:
+    - Summary max 2 bullets.
+    - Experience max 2 bullets per role.
+    - Projects max 2 bullets total.
+    - Education core facts must remain but narrative text should be minimal.
+- Output ONLY valid raw HTML.`;
+
+    return await withRetry(async () => {
+        const response = await ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: {
+                responseMimeType: "text/plain",
+                thinkingConfig: { thinkingBudget: 4096 },
+                systemInstruction: "You are an expert resume editor. Optimize layout/content density to fit exactly one A4 page while preserving all immutable facts and locked links.",
+            }
+        });
+
+        const cleanedHtml = response.text || "";
+        const htmlMatch = cleanedHtml.match(/(?:<!DOCTYPE html>|<html)[\s\S]*<\/html>/i);
+        const resultHtmlWithPlaceholders = htmlMatch ? htmlMatch[0] : cleanedHtml.replace(/^\s*```html/, '').replace(/\s*```$/, '').trim();
+        const resultHtml = restoreLinkPlaceholdersInText(resultHtmlWithPlaceholders, lockedLinks);
+
+        validateLockedLinksInHtmlOrThrow(resultHtml, lockedLinks, strictLinkIntegrity);
+        validatePersonalIntegrityOrThrow(resultHtml, personalGuardrails, strictLinkIntegrity);
         return resultHtml;
     });
 };

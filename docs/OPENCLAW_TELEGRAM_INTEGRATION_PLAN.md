@@ -77,6 +77,11 @@ Controller returns:
    - `node` runtime + `dist/cli.js` are available.
    - required env vars exist (`GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`).
 7. Replace global `current_job_desc.txt` with job-scoped temp path (e.g. `temp/<job_id>/job_desc.txt`) to avoid parallel-run collisions.
+8. Tune strict CV factual guardrails to validate immutable core facts only (identity/contact + education core facts), not all descriptive bullets.
+9. Implement one-page control loop in generation runtime:
+   - section output budgets in prompts,
+   - runtime A4 page estimator,
+   - conditional compaction pass with bounded retries before strict failure.
 
 ### Files
 - `scripts/telegram_reaction_listener.ps1`
@@ -193,6 +198,8 @@ Controller returns:
    - status progression to `CV_Ready_For_Review`
    - PDF returned to Telegram
    - logs and map files updated
+   - strict validation blocks changed factual entities (education/institution/years, injected residence/city), but does not fail on legitimate professional bullet rewriting.
+   - strict one-page mode retries compaction first and fails only if final rendered output still exceeds one A4 page.
 
 ## Runtime prerequisite note
 - CV generation success depends on active generation runtime/agent context.
