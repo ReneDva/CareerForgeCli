@@ -66,7 +66,11 @@ function buildLockedLinksInstruction(lockedLinks: LockedLink[]): string {
     ].join("\n");
 }
 
-function validateLockedLinksInHtmlOrThrow(html: string, lockedLinks: LockedLink[]): void {
+function validateLockedLinksInHtmlOrThrow(
+    html: string,
+    lockedLinks: LockedLink[],
+    strictLinkIntegrity: boolean
+): void {
     if (!lockedLinks.length) {
         return;
     }
@@ -74,7 +78,11 @@ function validateLockedLinksInHtmlOrThrow(html: string, lockedLinks: LockedLink[
     const missing = lockedLinks.filter((item) => !html.includes(item.url));
     if (missing.length > 0) {
         const missingSummary = missing.map((item) => `${item.label}: ${item.url}`).join(', ');
-        throw new Error(`Generated HTML is missing locked profile links: ${missingSummary}`);
+        const message = `Generated HTML is missing locked profile links: ${missingSummary}`;
+        if (strictLinkIntegrity) {
+            throw new Error(message);
+        }
+        process.stderr.write(`[WARN] ${message}\n`);
     }
 }
 
@@ -137,7 +145,8 @@ export const generateApplicationAssets = async (
     profile: UserProfile,
     job: JobDetails,
     apiKey: string,
-    modelOverride?: string
+    modelOverride?: string,
+    strictLinkIntegrity: boolean = true
 ): Promise<GeneratedAssets> => {
     if (!apiKey) throw new Error("API Key missing.");
 
@@ -195,7 +204,7 @@ export const generateApplicationAssets = async (
         const text = response.text;
         if (!text) throw new Error("Empty response from Gemini.");
         const parsed = JSON.parse(text) as GeneratedAssets;
-        validateLockedLinksInHtmlOrThrow(parsed.resumeHtml, lockedLinks);
+        validateLockedLinksInHtmlOrThrow(parsed.resumeHtml, lockedLinks, strictLinkIntegrity);
         return parsed;
     });
 };
@@ -205,7 +214,8 @@ export const refineResume = async (
     job: JobDetails,
     profile: UserProfile,
     apiKey: string,
-    modelOverride?: string
+    modelOverride?: string,
+    strictLinkIntegrity: boolean = true
 ): Promise<string> => {
     if (!apiKey) throw new Error("API Key missing.");
 
@@ -240,7 +250,7 @@ ${lockedLinksInstruction}
         // Extract HTML block using regex to avoid potential markdown wrap in response
         const htmlMatch = cleanedHtml.match(/(?:<!DOCTYPE html>|<html)[\s\S]*<\/html>/i);
         const resultHtml = htmlMatch ? htmlMatch[0] : cleanedHtml.replace(/^\s*```html/, '').replace(/\s*```$/, '').trim();
-        validateLockedLinksInHtmlOrThrow(resultHtml, lockedLinks);
+        validateLockedLinksInHtmlOrThrow(resultHtml, lockedLinks, strictLinkIntegrity);
         return resultHtml;
     });
 };

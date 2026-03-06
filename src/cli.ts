@@ -162,6 +162,7 @@ program
     .option('-o, --out <path>', 'Output path for PDF', 'resume.pdf')
     .option('-t, --theme <name>', 'Theme (original, modern, serif, minimal)', 'modern')
     .option('-m, --model <id>', 'Model override (must be in allowlist, e.g. google/gemini-2.5-pro)')
+    .option('--no-strict-link-integrity', 'Allow generation to continue even when locked profile links are missing in output')
     .action(async (options) => {
         const apiKey = process.env.GEMINI_API_KEY || "GATEWAY_MANAGED";
         try {
@@ -176,12 +177,13 @@ program
             };
             const profile = { content: profileContent };
             const selectedModel = options.model ? String(options.model).trim() : undefined;
+            const strictLinkIntegrity = options.strictLinkIntegrity !== false;
 
-            console.log(`🚀 Gemini is crafting your executive resume${selectedModel ? ` (model: ${selectedModel})` : ''}...`);
-            const generated = await generateApplicationAssets(profile, jobDetails, apiKey, selectedModel);
+            console.log(`🚀 Gemini is crafting your executive resume${selectedModel ? ` (model: ${selectedModel})` : ''}${strictLinkIntegrity ? ' [strict-link-integrity]' : ' [link-integrity-warn-only]'}...`);
+            const generated = await generateApplicationAssets(profile, jobDetails, apiKey, selectedModel, strictLinkIntegrity);
 
             console.log("🛠️ Performing surgical refinement for ATS optimization...");
-            const refinedHtml = await refineResume(generated.resumeHtml, jobDetails, profile, apiKey, selectedModel);
+            const refinedHtml = await refineResume(generated.resumeHtml, jobDetails, profile, apiKey, selectedModel, strictLinkIntegrity);
 
             let finalHtml = refinedHtml;
             const theme = options.theme.toLowerCase();
