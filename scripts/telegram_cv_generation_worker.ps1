@@ -12,6 +12,8 @@ $workspaceRoot = Join-Path $PSScriptRoot '..'
 $trackerPath = Join-Path $workspaceRoot 'job_tracker.csv'
 $jobsFoundPath = Join-Path $workspaceRoot 'jobs_found.json'
 $jobsRawPath = Join-Path $workspaceRoot 'jobs.json'
+$profilePath = Join-Path $workspaceRoot 'profile.md'
+$cliPath = Join-Path $workspaceRoot 'dist/cli.js'
 $rocketEmoji = [char]::ConvertFromUtf32(0x1F680)
 $allowedModels = @(
     'google/gemini-3-pro-preview',
@@ -72,6 +74,104 @@ function Resolve-GenerationModel {
     throw "Requested model '$RequestedModelId' is not allowed. Allowed: $($allowedModels -join ', ')"
 }
 
+function Get-DotEnvValues {
+    param([Parameter(Mandatory=$true)][string]$WorkspacePath)
+
+    $map = @{}
+    $dotEnvPath = Join-Path $WorkspacePath '.env'
+    if (-not (Test-Path $dotEnvPath)) {
+        return $map
+    }
+
+    try {
+        $lines = Get-Content $dotEnvPath -Encoding UTF8
+        foreach ($line in $lines) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $trimmed = "$line".Trim()
+            if ($trimmed.StartsWith('#')) { continue }
+            if ($trimmed -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') { continue }
+
+            $k = "$($matches[1])"
+            $v = "$($matches[2])".Trim()
+            if (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'"))) {
+                $v = $v.Substring(1, $v.Length - 2)
+            }
+            $map[$k] = $v
+        }
+    } catch {
+        # best-effort only
+    }
+
+    return $map
+}
+
+function Get-ConfigOrEnvValue {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [hashtable]$DotEnvValues
+    )
+
+    $fromEnv = [Environment]::GetEnvironmentVariable($Name)
+    if (-not [string]::IsNullOrWhiteSpace("$fromEnv")) {
+        return "$fromEnv"
+    }
+
+    if ($DotEnvValues -and $DotEnvValues.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace("$($DotEnvValues[$Name])")) {
+        return "$($DotEnvValues[$Name])"
+    }
+
+    return ''
+}
+
+function Assert-CvGenerationPreflight {
+    param(
+        [Parameter(Mandatory=$true)][string]$WorkspacePath,
+        [Parameter(Mandatory=$true)][string]$ProfileFilePath,
+        [Parameter(Mandatory=$true)][string]$CliFilePath,
+        [Parameter(Mandatory=$true)][string]$BotTokenParam
+    )
+
+    $failures = New-Object System.Collections.Generic.List[string]
+
+    if (-not (Test-Path $ProfileFilePath)) {
+        $failures.Add("profile.md not found at '$ProfileFilePath'.")
+    } else {
+        try {
+            Get-Content -Path $ProfileFilePath -TotalCount 1 -Encoding UTF8 | Out-Null
+        } catch {
+            $failures.Add("profile.md exists but is not readable: $($_.Exception.Message)")
+        }
+    }
+
+    if (-not (Test-Path $CliFilePath)) {
+        $failures.Add("CLI entrypoint missing at '$CliFilePath'. Run build first.")
+    }
+
+    try {
+        $nodeCmd = Get-Command node -ErrorAction Stop
+        if (-not $nodeCmd) {
+            $failures.Add('Node.js runtime (node) is not available in PATH.')
+        }
+    } catch {
+        $failures.Add('Node.js runtime (node) is not available in PATH.')
+    }
+
+    $dotEnvValues = Get-DotEnvValues -WorkspacePath $WorkspacePath
+    $geminiApiKey = Get-ConfigOrEnvValue -Name 'GEMINI_API_KEY' -DotEnvValues $dotEnvValues
+    $telegramToken = if (-not [string]::IsNullOrWhiteSpace("$BotTokenParam")) { "$BotTokenParam" } else { Get-ConfigOrEnvValue -Name 'TELEGRAM_BOT_TOKEN' -DotEnvValues $dotEnvValues }
+
+    if ([string]::IsNullOrWhiteSpace($geminiApiKey)) {
+        $failures.Add('Missing required GEMINI_API_KEY (env or .env).')
+    }
+    if ([string]::IsNullOrWhiteSpace($telegramToken)) {
+        $failures.Add('Missing required TELEGRAM_BOT_TOKEN (param/env/.env).')
+    }
+
+    if ($failures.Count -gt 0) {
+        throw "Preflight failed: $($failures -join ' | ')"
+    }
+}
+
 $rows = Get-TrackerRows -TrackerPath $trackerPath
 $row = $rows | Where-Object { "$($_.job_id)" -eq "$JobId" } | Select-Object -First 1
 if (-not $row) {
@@ -94,8 +194,14 @@ if (-not $job) {
     }
 }
 
+Assert-CvGenerationPreflight -WorkspacePath $workspaceRoot -ProfileFilePath $profilePath -CliFilePath $cliPath -BotTokenParam $BotToken
+
 $desc = if ($job.description) { "$($job.description)" } else { "Role: $($job.title)`nCompany: $($job.company)`nLocation: $($job.location)`nLink: $($job.job_url)" }
-$jobDescPath = Join-Path $workspaceRoot 'current_job_desc.txt'
+$jobTempDir = Join-Path $workspaceRoot ("temp/" + $JobId)
+if (-not (Test-Path $jobTempDir)) {
+    New-Item -ItemType Directory -Path $jobTempDir -Force | Out-Null
+}
+$jobDescPath = Join-Path $jobTempDir 'job_desc.txt'
 Set-Content -Path $jobDescPath -Value $desc -Encoding UTF8
 
 $cvPath = Get-NextCvPath -TargetJobId $JobId
@@ -105,7 +211,7 @@ $pushed = $false
 try {
     Push-Location $workspaceRoot
     $pushed = $true
-    & node dist/cli.js generate --profile profile.md --job current_job_desc.txt --out "$cvPath" --theme modern --model "$generationModel"
+    & node "$cliPath" generate --profile "$profilePath" --job "$jobDescPath" --out "$cvPath" --theme modern --model "$generationModel"
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0 -or -not (Test-Path $cvPath)) {
@@ -133,5 +239,10 @@ try {
     }
     if (Test-Path $jobDescPath) {
         Remove-Item $jobDescPath -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $jobTempDir) {
+        try {
+            Remove-Item $jobTempDir -ErrorAction SilentlyContinue
+        } catch {}
     }
 }
