@@ -6,7 +6,7 @@ description: Auto-Search Jobs, Generate CVs, and Human-like Auto-Apply via Teleg
 
 ---
 
-# OpenClaw Job Hunter, CV Generator & Auto-Apply Skill (v2026.03.05.FINAL)
+# OpenClaw Job Hunter, CV Generator & Auto-Apply Skill (v2026.03.06)
 
 This skill teaches the agent how to monitor jobs, generate tailored PDFs, and perform human-like applications using the CareerForge CLI and OpenClaw browser tools.
 
@@ -19,6 +19,8 @@ This skill teaches the agent how to monitor jobs, generate tailored PDFs, and pe
 
 1. **User Preferences**: Ask for target role, location, and search interval.
 2. **Profile Path**: Ensure `profile.md` exists in the workspace.
+	- `profile.md` is the **generic baseline CV source** in Markdown format (not PDF).
+	- Tailored outputs are generated as job-specific PDF artifacts.
 3. **Identity Check**: Read `IDENTITY.md` and `SOUL.md` to align with the user's persona.
 
 ## 1. The Search Schedule (Cron)
@@ -40,21 +42,30 @@ Configure a recurring background task:
 
 ## 2. Step A: Generate & Verify CV (Reaction: 👍)
 
-When the user reacts with 👍 or 🚀:
+When the user reacts with 👍 (and only proceeds to apply after explicit approval):
 
-1. **Prepare**: Save job description to `current_job_desc.txt`.
+1. **Preflight (Hard Gate)**:
+	- Verify `profile.md` exists and is readable.
+	- Verify `node` runtime + `dist/cli.js` are available.
+	- Verify required env vars are available (`GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`).
+	- If any check fails: stop, set failure status, and send clear guidance to user.
+
+2. **Prepare**: Save job description to a job-scoped temp path, e.g. `temp/<job_id>/job_desc.txt` (avoid global file collisions).
 2. **Execute CLI Generate**:
 
 ```bash
-# Internal Documentation: Initial PDF named by company for internal archive
-node dist/cli.js generate --profile profile.md --job current_job_desc.txt --out resumes/resume_<company>.pdf --theme modern
+# Internal Documentation: CV base comes from profile.md (Markdown), then tailored per job
+node dist/cli.js generate --profile profile.md --job temp/<job_id>/job_desc.txt --out Generated_CVs/<job_id>/draft_v1.pdf --theme modern
 
 ```
 
-3. **Action (Review)**: Upload the generated PDF `resumes/resume_<company>.pdf` to the Telegram chat.
+3. **Model Selection Contract**:
+	- If chat model was selected via `/models` or `/model`, generation must use that selected model.
+
+4. **Action (Review)**: Upload the generated draft PDF to the Telegram chat.
 4. **Message**: "✅ כאן קורות החיים המותאמים שיצרתי עבור **<company>**. המערכת תגיש אותם תחת השם **Rene_Dvash.pdf**. האם לאשר הגשה אוטומטית? (הגיבי 'אשר' או לחצי 🚀)"
 5. **Hard Stop**: Wait for explicit user confirmation.
-6. **Cleanup**: Delete `current_job_desc.txt` immediately after generation.
+6. **Cleanup**: Delete the job-scoped temp description file immediately after generation.
 
 ## 3. Step B: Human-like Application (Reaction: 🚀 or Approval)
 
@@ -105,6 +116,12 @@ node dist/cli.js apply --file Rene_Dvash.pdf --url "<JOB_URL>"
  * 2. SEPARATION: Forced atomic messaging (one job per message) to prevent reaction confusion.
  * 3. SYNC GATE: Implemented mandatory PDF review stage before browser interaction.
  * 4. WORKSPACE HYGIENE: Automated deletion of 'current_job_desc.txt' and redirection of md files to 'memory/'.
+ *
+ * 2026.03.06 ALIGNMENT UPDATE:
+ * 1. `profile.md` is the canonical generic CV in Markdown (source of truth for generation).
+ * 2. Added runtime preflight checks before generation.
+ * 3. Replaced global current_job_desc.txt with temp/<job_id>/job_desc.txt to prevent parallel overwrite.
+ * 4. `/models` and `/model` selection must be wired to actual generation runtime model.
  */
 
 ```

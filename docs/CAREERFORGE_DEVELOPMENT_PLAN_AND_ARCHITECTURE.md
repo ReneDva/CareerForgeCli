@@ -1,6 +1,6 @@
 # CareerForge — Development Plan & Recommended Architecture
 
-_Last updated: 2026-03-05_
+_Last updated: 2026-03-06_
 
 מסמך זה מיועד לשימוש פיתוח שוטף (Assistant + User) ולתיעוד מוצרי/טכני של המערכת.
 
@@ -14,6 +14,7 @@ _Last updated: 2026-03-05_
 4. לשמור היסטוריית גרסאות CV + ארכיון קבצים שהוגשו בפועל.
 5. לשמור סטטוס משרה ברור מקצה לקצה (הוגש / לא הוגש / נכשל + סיבה).
 6. למנוע חסימות באתרי יעד (במיוחד LinkedIn) באמצעות מצב הגשה חצי-ידני כברירת מחדל.
+7. להגדיר מקור אמת קבוע ל-CV בסיסי: `profile.md` כקובץ Markdown גנרי (לא PDF), שממנו נגזרות גרסאות PDF מותאמות.
 
 ---
 
@@ -103,12 +104,21 @@ _Last updated: 2026-03-05_
 - לשמור מיפוי `telegram_message_id -> job_id` בקובץ `memory/telegram_message_map.csv`.
 - להוסיף מאזין `getUpdates` לריאקציות 👍 שמפעיל אוטומטית יצירת CV ושולח PDF חזרה למשתמש.
 - להוסיף בדיקת זמינות Runtime/Agent לפני התחלת יצירת CV, עם הודעת שגיאה ברורה למשתמש במקרה שהריצה אינה זמינה.
+- להוסיף Preflight קשיח לפני יצירת CV:
+  - קיום/קריאות של `profile.md`.
+  - זמינות `node` ו-`dist/cli.js`.
+  - קיום משתני סביבה נדרשים (`GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`).
+- להחליף את `current_job_desc.txt` הגלובלי בנתיב זמני פר-משרה (למשל `temp/<job_id>/job_desc.txt`) למניעת התנגשות בריצות מקבילות.
+- לחבר את בחירת המודל מ-`/models` ו-`/model` ל-Generation runtime בפועל (לא רק מצב UI).
 
 #### בדיקות
 - בדיקה חוזרת עם אותו קלט: סדר ההודעות נשאר זהה בכל ריצה.
 - בדיקת הודעות ניסיון לטלגרם באמצעות `scripts/telegram_send_test_messages.ps1`.
 - אימות משתמש בפועל בטלגרם: הודעות נפרדות, תבנית אחידה, וסדר קבוע.
 - בדיקת prerequisite: אם Runtime/Agent ליצירת CV לא פעיל — מתקבלת הודעת כשל ברורה ואין מעבר שקט.
+- בדיקת preflight של `profile.md`: אם הקובץ חסר/לא קריא — אין התחלת generation, סטטוס ולוג מתעדכנים עם הסיבה.
+- בדיקת race-condition: שתי ריאקציות מהירות על משרות שונות אינן דורסות קלט job description.
+- בדיקת model wiring: בחירת מודל בצ'אט משנה בפועל את המודל שבו generation רץ.
 - בדיקת ריאקציה: לאחר הודעת משרה, תגובת 👍 צריכה להעביר סטטוס ל-`CV_Generating` ואז `CV_Ready_For_Review` עם שליחת PDF.
 
 #### בדיקת End-to-End מומלצת (ידנית)
@@ -124,6 +134,7 @@ _Last updated: 2026-03-05_
 #### Exit Criteria
 - שליחת ההודעות למשתמש מתבצעת בסדר עקבי ותבנית אחידה, עם לוג dispatch מלא.
 - זרימת יצירת CV תלויה ב-Runtime/Agent פעיל ומחזירה הודעת guidance ברורה אם prerequisite חסר.
+- `profile.md` מוגדר ומטופל כמקור CV גנרי ב-Markdown לאורך כל הזרימה.
 
 ---
 
@@ -133,6 +144,7 @@ _Last updated: 2026-03-05_
 - לאפשר review + revisions לפני הגשה.
 
 ### משימות
+- להבהיר שהבסיס ליצירה הוא `profile.md` (Markdown) + תיאור משרה, ולא קלט PDF קיים.
 - בעת Generate: לשמור כ-`Generated_CVs/<job_id>/draft_vN.pdf`.
 - לשלוח למשתמש הודעת review עם אפשרויות:
   - אישור

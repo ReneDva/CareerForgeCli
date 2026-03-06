@@ -1,0 +1,113 @@
+{
+  "project": {
+    "name": "CareerForgeCli",
+    "version": "2026.03.06",
+    "environment": "local"
+  },
+  "paths": {
+    "workspaceRoot": "./",
+    "profileMarkdown": "./profile.md",
+    "jobDescriptionTempDir": "./temp",
+    "generatedCvDir": "./Generated_CVs",
+    "submittedCvDir": "./Submitted_CVs",
+    "jobTrackerCsv": "./job_tracker.csv",
+    "telegramModelState": "./memory/telegram_model_state.json",
+    "telegramMessageMap": "./memory/telegram_message_map.csv",
+    "telegramOffsetFile": "./memory/telegram_update_offset.txt"
+  },
+  "env": {
+    "required": {
+      "GEMINI_API_KEY": "<required>",
+      "TELEGRAM_BOT_TOKEN": "<required>"
+    },
+    "optional": {
+      "OPENCLAW_HOME": "~/.openclaw",
+      "OPENCLAW_STATE_DIR": "~/.openclaw",
+      "OPENCLAW_CONFIG_PATH": "~/.openclaw/openclaw.json",
+      "OPENCLAW_GATEWAY_PORT": "18789",
+      "OPENCLAW_GATEWAY_PASSWORD": "<optional-if-auth-mode-password>",
+      "OPENCLAW_GATEWAY_TOKEN": "<optional-if-auth-mode-token>",
+      "OPENCLAW_PROFILE": "default",
+      "OPENCLAW_AGENT_ID": "main",
+      "OPENCLAW_WORKSPACE_PATH": "<optional>",
+      "OPENCLAW_AGENT_DIR": "<optional>",
+      "OPENCLAW_SESSIONS_DIR": "<optional>",
+      "TELEGRAM_CHAT_ID": "5225138885"
+    }
+  },
+  "careerforge": {
+    "cvGeneration": {
+      "baselineProfileType": "markdown",
+      "baselineProfilePath": "./profile.md",
+      "defaultTheme": "modern",
+      "allowedModels": [
+        "google/gemini-3-pro-preview",
+        "google/gemini-2.5-pro",
+        "google/gemini-2.0-flash"
+      ],
+      "fallbackModel": "google/gemini-3-pro-preview"
+    },
+    "telegram": {
+      "listenerMode": "polling",
+      "allowedUpdates": [
+        "message",
+        "callback_query",
+        "message_reaction",
+        "my_chat_member"
+      ],
+      "pollIntervalSeconds": 3,
+      "retry": {
+        "maxRetries": 3,
+        "retryDelaySeconds": 2
+      }
+    }
+  },
+  "openclaw": {
+    "gateway": {
+      "mode": "local",
+      "bind": "loopback",
+      "port": 18789,
+      "auth": {
+        "mode": "token",
+        "tokenEnv": "OPENCLAW_GATEWAY_TOKEN",
+        "passwordEnv": "OPENCLAW_GATEWAY_PASSWORD"
+      },
+      "controlUi": {
+        "enabled": true,
+        "baseUrl": "http://127.0.0.1:18789/"
+      },
+      "reload": {
+        "mode": "hybrid",
+        "debounceMs": 300
+      }
+    },
+    "channels": {
+      "telegram": {
+        "enabled": true,
+        "tokenSource": "TELEGRAM_BOT_TOKEN",
+        "dmPolicy": "pairing",
+        "groupPolicy": "allowlist"
+      }
+    },
+    "session": {
+      "dmScope": "per-channel-peer"
+    },
+    "tools": {
+      "profile": "messaging",
+      "deny": [
+        "gateway",
+        "cron"
+      ]
+    }
+  },
+  "notes": {
+    "security": [
+      "Never commit real secrets in this file.",
+      "Use this as a template and store real values in .env / ~/.openclaw/openclaw.json."
+    ],
+    "usage": [
+      "Copy to project.config.local.json for machine-specific settings.",
+      "Keep this example file source-controlled, keep local file ignored."
+    ]
+  }
+}

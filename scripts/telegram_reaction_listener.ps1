@@ -315,12 +315,19 @@ function Start-CvGenerationForJob {
     }
 
     try {
+        $activeModel = Get-ActiveModelForChat -ChatId "$ChatId"
+        $isAllowedModel = @((Get-ModelOptions) | Where-Object { "$($_.id)" -eq "$activeModel" }).Count -gt 0
+        if (-not $isAllowedModel) {
+            throw "Selected model '$activeModel' is not in allowed model list."
+        }
+
         $argList = @(
             '-NoProfile',
             '-File', $workerPath,
             '-JobId', $JobId,
             '-BotToken', $BotToken,
-            '-ChatId', $ChatId
+            '-ChatId', $ChatId,
+            '-ModelId', $activeModel
         )
 
         Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden | Out-Null

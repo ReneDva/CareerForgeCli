@@ -161,6 +161,7 @@ program
     .requiredOption('-j, --job <path>', 'Path to job description text file')
     .option('-o, --out <path>', 'Output path for PDF', 'resume.pdf')
     .option('-t, --theme <name>', 'Theme (original, modern, serif, minimal)', 'modern')
+    .option('-m, --model <id>', 'Model override (must be in allowlist, e.g. google/gemini-2.5-pro)')
     .action(async (options) => {
         const apiKey = process.env.GEMINI_API_KEY || "GATEWAY_MANAGED";
         try {
@@ -174,12 +175,13 @@ program
                 description: jobContent
             };
             const profile = { content: profileContent };
+            const selectedModel = options.model ? String(options.model).trim() : undefined;
 
-            console.log("🚀 Gemini 2.5 Pro is crafting your executive resume...");
-            const generated = await generateApplicationAssets(profile, jobDetails, apiKey);
+            console.log(`🚀 Gemini is crafting your executive resume${selectedModel ? ` (model: ${selectedModel})` : ''}...`);
+            const generated = await generateApplicationAssets(profile, jobDetails, apiKey, selectedModel);
 
             console.log("🛠️ Performing surgical refinement for ATS optimization...");
-            const refinedHtml = await refineResume(generated.resumeHtml, jobDetails, profile, apiKey);
+            const refinedHtml = await refineResume(generated.resumeHtml, jobDetails, profile, apiKey, selectedModel);
 
             let finalHtml = refinedHtml;
             const theme = options.theme.toLowerCase();

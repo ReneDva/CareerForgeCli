@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$JobId,
     [Parameter(Mandatory=$true)][string]$BotToken,
-    [Parameter(Mandatory=$true)][string]$ChatId
+    [Parameter(Mandatory=$true)][string]$ChatId,
+    [string]$ModelId = ''
 )
 
 . "$PSScriptRoot\job_state_machine.ps1"
@@ -12,6 +13,11 @@ $trackerPath = Join-Path $workspaceRoot 'job_tracker.csv'
 $jobsFoundPath = Join-Path $workspaceRoot 'jobs_found.json'
 $jobsRawPath = Join-Path $workspaceRoot 'jobs.json'
 $rocketEmoji = [char]::ConvertFromUtf32(0x1F680)
+$allowedModels = @(
+    'google/gemini-3-pro-preview',
+    'google/gemini-2.5-pro',
+    'google/gemini-2.0-flash'
+)
 
 Initialize-JobTracker -TrackerPath $trackerPath
 
@@ -49,6 +55,23 @@ function Get-NextCvPath {
     }
 }
 
+function Resolve-GenerationModel {
+    param([string]$RequestedModelId)
+
+    $fallback = 'google/gemini-3-pro-preview'
+    if ([string]::IsNullOrWhiteSpace($RequestedModelId)) {
+        return $fallback
+    }
+
+    $normalized = "$RequestedModelId".Trim().ToLowerInvariant()
+    $match = @($allowedModels | Where-Object { "$_".ToLowerInvariant() -eq $normalized } | Select-Object -First 1)
+    if ($match.Count -gt 0) {
+        return "$($match[0])"
+    }
+
+    throw "Requested model '$RequestedModelId' is not allowed. Allowed: $($allowedModels -join ', ')"
+}
+
 $rows = Get-TrackerRows -TrackerPath $trackerPath
 $row = $rows | Where-Object { "$($_.job_id)" -eq "$JobId" } | Select-Object -First 1
 if (-not $row) {
@@ -76,12 +99,13 @@ $jobDescPath = Join-Path $workspaceRoot 'current_job_desc.txt'
 Set-Content -Path $jobDescPath -Value $desc -Encoding UTF8
 
 $cvPath = Get-NextCvPath -TargetJobId $JobId
+$generationModel = Resolve-GenerationModel -RequestedModelId $ModelId
 $pushed = $false
 
 try {
     Push-Location $workspaceRoot
     $pushed = $true
-    & node dist/cli.js generate --profile profile.md --job current_job_desc.txt --out "$cvPath" --theme modern
+    & node dist/cli.js generate --profile profile.md --job current_job_desc.txt --out "$cvPath" --theme modern --model "$generationModel"
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0 -or -not (Test-Path $cvPath)) {

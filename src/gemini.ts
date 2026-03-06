@@ -10,6 +10,33 @@ import { UserProfile, JobDetails, GeneratedAssets } from "./types";
 const GENERATOR_MODEL = 'gemini-2.5-pro';
 const JUDGE_MODEL = 'gemini-2.5-pro';
 
+const ALLOWED_MODEL_ALIASES: Record<string, string> = {
+    'google/gemini-3-pro-preview': 'gemini-3-pro-preview',
+    'google/gemini-2.5-pro': 'gemini-2.5-pro',
+    'google/gemini-2.0-flash': 'gemini-2.0-flash',
+    'gemini-3-pro-preview': 'gemini-3-pro-preview',
+    'gemini-2.5-pro': 'gemini-2.5-pro',
+    'gemini-2.0-flash': 'gemini-2.0-flash'
+};
+
+function resolveAllowedModelOrThrow(rawModel?: string): string {
+    if (!rawModel || !rawModel.trim()) {
+        return GENERATOR_MODEL;
+    }
+
+    const key = rawModel.trim().toLowerCase();
+    const resolved = ALLOWED_MODEL_ALIASES[key];
+    if (!resolved) {
+        throw new Error(
+            `Model '${rawModel}' is not in allowlist. Allowed: ${Object.keys(ALLOWED_MODEL_ALIASES)
+                .filter((k) => k.startsWith('google/'))
+                .join(', ')}`
+        );
+    }
+
+    return resolved;
+}
+
 /**
  * 2026 INTERNAL DOCUMENTATION:
  * 1. Pacing Logic: Mandatory 5s base delay on retries to avoid 429/503 spikes.
@@ -50,7 +77,8 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 5, delay = 5000): Pr
 export const generateApplicationAssets = async (
     profile: UserProfile,
     job: JobDetails,
-    apiKey: string
+    apiKey: string,
+    modelOverride?: string
 ): Promise<GeneratedAssets> => {
     if (!apiKey) throw new Error("API Key missing.");
 
@@ -68,6 +96,8 @@ export const generateApplicationAssets = async (
         required: ["resumeHtml"]
     };
 
+    const generatorModel = resolveAllowedModelOrThrow(modelOverride);
+
     const prompt = `
     TASK: Generate a high-impact, 1-page HTML resume using Gemini 2.5 Pro capabilities.
     USER_PROFILE: ${profile.content}
@@ -82,7 +112,7 @@ export const generateApplicationAssets = async (
 
     return await withRetry(async () => {
         const response = await ai.models.generateContent({
-            model: GENERATOR_MODEL,
+            model: generatorModel,
             contents: prompt,
             config: {
                 responseMimeType: "application/json",
@@ -103,16 +133,18 @@ export const refineResume = async (
     currentHtml: string,
     job: JobDetails,
     profile: UserProfile,
-    apiKey: string
+    apiKey: string,
+    modelOverride?: string
 ): Promise<string> => {
     if (!apiKey) throw new Error("API Key missing.");
 
     const ai = new GoogleGenAI({ apiKey });
+    const judgeModel = resolveAllowedModelOrThrow(modelOverride);
     const prompt = `Surgically refine this Resume HTML to perfectly match the JD keywords: ${job.description}. Current HTML: ${currentHtml}`;
 
     return await withRetry(async () => {
         const response = await ai.models.generateContent({
-            model: JUDGE_MODEL,
+            model: judgeModel,
             contents: prompt,
             config: {
                 responseMimeType: "text/plain",

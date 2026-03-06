@@ -1,6 +1,6 @@
 # OpenClaw + Telegram Integration Plan (CareerForge)
 
-_Last updated: 2026-03-05_
+_Last updated: 2026-03-06_
 
 ## 1) Goal
 
@@ -71,6 +71,12 @@ Controller returns:
 3. Ensure callback UX rule: always call answer-callback equivalent quickly.
 4. Keep stale-update suppression and offset progression deterministic.
 5. Add generator-runtime preflight check before starting CV generation jobs.
+6. Validate generation prerequisites at runtime:
+   - `profile.md` exists and is readable.
+   - `profile.md` is treated as the generic baseline CV source in **Markdown** (not PDF).
+   - `node` runtime + `dist/cli.js` are available.
+   - required env vars exist (`GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`).
+7. Replace global `current_job_desc.txt` with job-scoped temp path (e.g. `temp/<job_id>/job_desc.txt`) to avoid parallel-run collisions.
 
 ### Files
 - `scripts/telegram_reaction_listener.ps1`
@@ -90,6 +96,7 @@ Controller returns:
 1. Keep static command menu via BotFather/API only.
 2. Runtime inline keyboards drive model/provider selection.
 3. Persist active model/provider state per user/chat.
+4. Wire selected model into CV generation runtime (selection must affect `generate`, not just UI state).
 4. Add deterministic fallback chain on overload:
    1) `google/gemini-3-pro-preview`
    2) `google/gemini-2.5-pro`
@@ -103,6 +110,7 @@ Controller returns:
 
 ### Exit Criteria
 - `/models` + selection works in one flow.
+- selected model is actually used by the generation pipeline.
 - overload => fallback => successful response or terminal error with clear reason.
 
 ---
@@ -174,6 +182,7 @@ Controller returns:
 1. Send test messages (`scripts/telegram_send_test_messages.ps1`).
 2. Start listener.
 3. Verify CV generation runtime/agent is active before reaction tests.
+4. Verify `profile.md` is present and valid as the generic Markdown resume source.
 4. Run commands:
    - `/models`
    - `/model status`
@@ -187,6 +196,7 @@ Controller returns:
 
 ## Runtime prerequisite note
 - CV generation success depends on active generation runtime/agent context.
+- `profile.md` is the canonical generic CV source (Markdown), while generated outputs are PDF artifacts per job/version.
 - If runtime is unavailable, controller should fail fast with a clear user message and retain deterministic status updates.
 
 ## E2E (OpenClaw)
