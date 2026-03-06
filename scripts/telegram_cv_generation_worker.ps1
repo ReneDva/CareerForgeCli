@@ -194,7 +194,23 @@ if (-not $job) {
     }
 }
 
-Assert-CvGenerationPreflight -WorkspacePath $workspaceRoot -ProfileFilePath $profilePath -CliFilePath $cliPath -BotTokenParam $BotToken
+try {
+    Assert-CvGenerationPreflight -WorkspacePath $workspaceRoot -ProfileFilePath $profilePath -CliFilePath $cliPath -BotTokenParam $BotToken
+} catch {
+    $preflightErr = if ($_.Exception -and $_.Exception.Message) { "$($_.Exception.Message)" } else { "$_" }
+    try {
+        Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV generation preflight failed' -FieldUpdates @{ last_error = $preflightErr }
+    } catch {}
+    Write-DispatchLog -JobId $JobId -Status 'Apply_Failed' -Reason 'preflight_failed'
+
+    try {
+        $safeErr = [System.Security.SecurityElement]::Escape($preflightErr)
+        $msg = "&#9888;&#65039; CV generation preflight failed for <b>$JobId</b>.`nReason: <code>$safeErr</code>"
+        Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+    } catch {}
+
+    exit 1
+}
 
 $desc = if ($job.description) { "$($job.description)" } else { "Role: $($job.title)`nCompany: $($job.company)`nLocation: $($job.location)`nLink: $($job.job_url)" }
 $jobTempDir = Join-Path $workspaceRoot ("temp/" + $JobId)

@@ -321,6 +321,21 @@ function Start-CvGenerationForJob {
             throw "Selected model '$activeModel' is not in allowed model list."
         }
 
+        $psHostPath = $null
+        try {
+            $psHostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        } catch {
+            try {
+                $psHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
+            } catch {
+                try {
+                    $psHostPath = (Get-Command pwsh -ErrorAction Stop).Source
+                } catch {
+                    throw "Cannot launch CV worker: neither powershell.exe nor pwsh is available in PATH."
+                }
+            }
+        }
+
         $argList = @(
             '-NoProfile',
             '-File', $workerPath,
@@ -330,8 +345,8 @@ function Start-CvGenerationForJob {
             '-ModelId', $activeModel
         )
 
-        Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden | Out-Null
-        Write-Host "Queued async CV generation worker for job_id=$JobId"
+        Start-Process -FilePath $psHostPath -ArgumentList $argList -WindowStyle Hidden | Out-Null
+        Write-Host "Queued async CV generation worker for job_id=$JobId via host=$psHostPath"
         return $true
     } catch {
         Write-Host "Failed to start async CV generation worker for '$JobId': $_"

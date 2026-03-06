@@ -19,6 +19,65 @@ const ALLOWED_MODEL_ALIASES: Record<string, string> = {
     'gemini-2.0-flash': 'gemini-2.0-flash'
 };
 
+type LockedLink = {
+    label: string;
+    url: string;
+};
+
+function extractLockedLinksFromMarkdown(markdown: string): LockedLink[] {
+    if (!markdown || !markdown.trim()) {
+        return [];
+    }
+
+    const links: LockedLink[] = [];
+    const seen = new Set<string>();
+    const markdownLinkRegex = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
+
+    let match: RegExpExecArray | null;
+    while ((match = markdownLinkRegex.exec(markdown)) !== null) {
+        const label = (match[1] || 'Link').trim();
+        const url = (match[2] || '').trim();
+        if (!url) continue;
+
+        const dedupeKey = `${label.toLowerCase()}|${url.toLowerCase()}`;
+        if (!seen.has(dedupeKey)) {
+            seen.add(dedupeKey);
+            links.push({ label, url });
+        }
+    }
+
+    return links;
+}
+
+function buildLockedLinksInstruction(lockedLinks: LockedLink[]): string {
+    if (lockedLinks.length === 0) {
+        return `- No source links were provided in the base markdown profile.`;
+    }
+
+    const lines = lockedLinks.map((item, index) => `${index + 1}. [${item.label}](${item.url})`);
+    return [
+        `LOCKED SOURCE LINKS (copy exactly, character-for-character):`,
+        ...lines,
+        `Rules:`,
+        `- Do NOT change protocol/domain/path/query/fragment in any listed URL.`,
+        `- Do NOT replace with generic homepage links.`,
+        `- Do NOT invent, normalize, shorten, or "fix" URLs.`,
+        `- If the resume includes these links, they must be exactly identical to source markdown.`
+    ].join("\n");
+}
+
+function validateLockedLinksInHtmlOrThrow(html: string, lockedLinks: LockedLink[]): void {
+    if (!lockedLinks.length) {
+        return;
+    }
+
+    const missing = lockedLinks.filter((item) => !html.includes(item.url));
+    if (missing.length > 0) {
+        const missingSummary = missing.map((item) => `${item.label}: ${item.url}`).join(', ');
+        throw new Error(`Generated HTML is missing locked profile links: ${missingSummary}`);
+    }
+}
+
 function resolveAllowedModelOrThrow(rawModel?: string): string {
     if (!rawModel || !rawModel.trim()) {
         return GENERATOR_MODEL;
@@ -97,6 +156,8 @@ export const generateApplicationAssets = async (
     };
 
     const generatorModel = resolveAllowedModelOrThrow(modelOverride);
+    const lockedLinks = extractLockedLinksFromMarkdown(profile.content);
+    const lockedLinksInstruction = buildLockedLinksInstruction(lockedLinks);
 
     const prompt = `
     TASK: Generate a high-impact, 1-page HTML resume using Gemini 2.5 Pro capabilities.
@@ -108,6 +169,14 @@ export const generateApplicationAssets = async (
     - Ensure a professional, modern look.
     - Output MUST be valid HTML5.
     - Avoid external JS; minimize external web fonts to ensure fast PDF rendering.
+
+    LINK INTEGRITY CONSTRAINTS:
+    ${lockedLinksInstruction}
+
+    TRUTHFULNESS CONSTRAINTS:
+    - Do NOT invent achievements, employers, dates, titles, links, repositories, education, or certifications.
+    - Do NOT exaggerate measurable impact; only use facts explicitly present in USER_PROFILE.
+    - If information is missing, omit it instead of guessing.
     `;
 
     return await withRetry(async () => {
@@ -125,7 +194,9 @@ export const generateApplicationAssets = async (
 
         const text = response.text;
         if (!text) throw new Error("Empty response from Gemini.");
-        return JSON.parse(text) as GeneratedAssets;
+        const parsed = JSON.parse(text) as GeneratedAssets;
+        validateLockedLinksInHtmlOrThrow(parsed.resumeHtml, lockedLinks);
+        return parsed;
     });
 };
 
@@ -140,7 +211,19 @@ export const refineResume = async (
 
     const ai = new GoogleGenAI({ apiKey });
     const judgeModel = resolveAllowedModelOrThrow(modelOverride);
-    const prompt = `Surgically refine this Resume HTML to perfectly match the JD keywords: ${job.description}. Current HTML: ${currentHtml}`;
+    const lockedLinks = extractLockedLinksFromMarkdown(profile.content);
+    const lockedLinksInstruction = buildLockedLinksInstruction(lockedLinks);
+    const prompt = `Surgically refine this Resume HTML to perfectly match the JD keywords: ${job.description}.
+
+Current HTML: ${currentHtml}
+
+SOURCE PROFILE: ${profile.content}
+
+CRITICAL CONSTRAINTS:
+${lockedLinksInstruction}
+- Keep the existing structure and formatting style unless a change is required for factual correctness or ATS relevance.
+- Preserve existing links exactly when present and never replace a user-specific link with a generic home page.
+- Never add fabricated or exaggerated claims.`;
 
     return await withRetry(async () => {
         const response = await ai.models.generateContent({
@@ -149,13 +232,15 @@ export const refineResume = async (
             config: {
                 responseMimeType: "text/plain",
                 thinkingConfig: { thinkingBudget: 4096 },
-                systemInstruction: "Refine the HTML content for maximum ATS compatibility. Output ONLY the raw HTML code.",
+                systemInstruction: "Refine the HTML content for maximum ATS compatibility. Preserve locked links exactly and do not invent facts. Output ONLY the raw HTML code.",
             }
         });
 
         const cleanedHtml = response.text || "";
         // Extract HTML block using regex to avoid potential markdown wrap in response
         const htmlMatch = cleanedHtml.match(/(?:<!DOCTYPE html>|<html)[\s\S]*<\/html>/i);
-        return htmlMatch ? htmlMatch[0] : cleanedHtml.replace(/^\s*```html/, '').replace(/\s*```$/, '').trim();
+        const resultHtml = htmlMatch ? htmlMatch[0] : cleanedHtml.replace(/^\s*```html/, '').replace(/\s*```$/, '').trim();
+        validateLockedLinksInHtmlOrThrow(resultHtml, lockedLinks);
+        return resultHtml;
     });
 };
