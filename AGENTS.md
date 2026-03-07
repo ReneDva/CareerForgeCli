@@ -52,6 +52,13 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 - `trash` > `rm` (recoverable beats gone forever)
 - When in doubt, ask.
 
+## Immutable CV Template Lock
+
+- `profile.md` is a locked canonical template.
+- Do **not** edit, rewrite, format, or auto-fix `profile.md` unless the human explicitly asks for that exact file to be changed in this session.
+- Any CV generation flow must treat `profile.md` as read-only input.
+- If a tool/flow would write to `profile.md`, stop and fail fast instead of proceeding.
+
 ## External vs Internal
 
 **Safe to do freely:**

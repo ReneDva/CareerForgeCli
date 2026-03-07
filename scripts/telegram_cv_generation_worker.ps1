@@ -240,13 +240,25 @@ try {
     Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'CV_Ready_For_Review' -Reason 'Draft CV sent to Telegram for manual review' -FieldUpdates @{ latest_cv_path = $cvPath; last_error = '' }
     Write-DispatchLog -JobId $JobId -Status 'CV_Ready_For_Review' -Reason 'cv_sent_for_manual_review'
 } catch {
+    $rawError = if ($_.Exception -and $_.Exception.Message) { "$($_.Exception.Message)" } else { "$_" }
+    $normalizedError = ($rawError -replace '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($normalizedError)) {
+        $normalizedError = 'Unknown error.'
+    }
+    if ($normalizedError.Length -gt 700) {
+        $normalizedError = $normalizedError.Substring(0, 700) + '...'
+    }
+
+    Write-Host "CV generation/send failed for job_id=${JobId}: $normalizedError"
+
     try {
-        Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV generation/send failed' -FieldUpdates @{ last_error = "$_" }
+        Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV generation/send failed' -FieldUpdates @{ last_error = $normalizedError }
     } catch {}
     Write-DispatchLog -JobId $JobId -Status 'Apply_Failed' -Reason 'cv_generation_or_send_failed'
 
     try {
-        $msg = "&#9888;&#65039; CV generation failed for <b>$JobId</b>. Check logs for details."
+        $safeErr = [System.Security.SecurityElement]::Escape($normalizedError)
+        $msg = "&#9888;&#65039; CV generation failed for <b>$JobId</b>.`nReason: <code>$safeErr</code>"
         Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
     } catch {}
 } finally {

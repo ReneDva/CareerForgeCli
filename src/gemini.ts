@@ -116,7 +116,7 @@ function canonicalizeFactText(s: string): string {
 
 function tokenizeWords(s: string): string[] {
     return canonicalizeFactText(s)
-        .split(/[^a-z0-9]+/)
+    .split(/[^\p{L}\p{N}]+/u)
         .map((t) => t.trim())
         .filter((t) => t.length >= 3);
 }
@@ -186,9 +186,16 @@ function extractImmutableEducationCoreFacts(markdown: string): string[] {
         if (/selected\s+academic\s*&\s*personal\s+projects?/i.test(cleaned)) continue;
         if (/^\d{4}\s*[\-–]\s*\d{4}\s*$/i.test(cleaned)) continue;
 
-        const hasStudyKeywords = /\b(b\.?sc\.?|msc|phd|track|program|college|university|academic|computer science|engineering|seminary|high school|school)\b/i.test(cleaned);
+        const isSecondaryEducation = /\b(high school|secondary school|bagrut|matriculation)\b/i.test(cleaned);
+        const hasStudyKeywords = /\b(b\.?sc\.?|msc|phd|track|program|college|university|academic|computer science|engineering|seminary)\b/i.test(cleaned);
         const hasYearPattern = /\b(19|20)\d{2}\b/.test(cleaned);
         const hasInstitutionDelimiter = /\|/.test(cleaned);
+
+        if (isSecondaryEducation) {
+            // Keep core immutable validation focused on higher-education facts only.
+            // Secondary-school lines are allowed to be compacted/omitted for one-page output.
+            continue;
+        }
 
         if (hasStudyKeywords || (hasYearPattern && hasInstitutionDelimiter)) {
             if (cleaned.length >= 4) {

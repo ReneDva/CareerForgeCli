@@ -252,10 +252,10 @@ try {
     $recentAfter = Get-RecentRows -Rows $rowsAfter -Since $runStart
     $summary = @(
         "recent_rows=$($recentAfter.Count)",
-        "sent=$(@($recentAfter | Where-Object { \"$($_.status)\" -eq 'Sent' }).Count)",
-        "generating=$(@($recentAfter | Where-Object { \"$($_.status)\" -eq 'CV_Generating' }).Count)",
-        "ready=$(@($recentAfter | Where-Object { \"$($_.status)\" -eq 'CV_Ready_For_Review' }).Count)",
-        "failed=$(@($recentAfter | Where-Object { \"$($_.status)\" -eq 'Apply_Failed' }).Count)"
+        "sent=$(@($recentAfter | Where-Object { "$($_.status)" -eq 'Sent' }).Count)",
+        "generating=$(@($recentAfter | Where-Object { "$($_.status)" -eq 'CV_Generating' }).Count)",
+        "ready=$(@($recentAfter | Where-Object { "$($_.status)" -eq 'CV_Ready_For_Review' }).Count)",
+        "failed=$(@($recentAfter | Where-Object { "$($_.status)" -eq 'Apply_Failed' }).Count)"
     ) -join '; '
     Add-Step -Name 'status_snapshot' -Status 'info' -Details $summary
 

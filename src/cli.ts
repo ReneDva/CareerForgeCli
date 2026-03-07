@@ -13,6 +13,7 @@
 import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import 'dotenv/config';
 import puppeteer from 'puppeteer';
 import type { Page } from 'puppeteer';
@@ -149,6 +150,75 @@ const THEMES: Record<string, { css: string }> = {
 
 const mmToPx = (mm: number): number => (mm * 96) / 25.4;
 const MAX_ONE_PAGE_COMPACTION_ATTEMPTS = 2;
+const PROFILE_WRITE_BYPASS_ENV = 'ALLOW_PROFILE_TEMPLATE_WRITE';
+
+type ProfileSnapshot = {
+    absolutePath: string;
+    sha256: string;
+    size: number;
+    mtimeMs: number;
+};
+
+function normalizePathForCompare(targetPath: string): string {
+    return path.resolve(targetPath).replace(/\\/g, '/').toLowerCase();
+}
+
+function assertNotProfileWriteTargetOrThrow(targetPath: string, profilePath: string, contextLabel: string): void {
+    if (process.env[PROFILE_WRITE_BYPASS_ENV] === 'true') {
+        return;
+    }
+
+    const normalizedTarget = normalizePathForCompare(targetPath);
+    const normalizedProfile = normalizePathForCompare(profilePath);
+    if (normalizedTarget === normalizedProfile) {
+        throw new Error(
+            `Blocked unsafe write target (${contextLabel}): profile template is immutable (${profilePath}). ` +
+            `Use a different output path.`
+        );
+    }
+}
+
+function takeProfileSnapshot(profilePath: string): ProfileSnapshot {
+    const abs = path.resolve(profilePath);
+    const content = fs.readFileSync(abs, 'utf-8');
+    const stat = fs.statSync(abs);
+    const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
+    return {
+        absolutePath: abs,
+        sha256,
+        size: stat.size,
+        mtimeMs: stat.mtimeMs
+    };
+}
+
+function assertProfileUnchangedOrThrow(before: ProfileSnapshot): void {
+    if (process.env[PROFILE_WRITE_BYPASS_ENV] === 'true') {
+        return;
+    }
+
+    const after = takeProfileSnapshot(before.absolutePath);
+    const changed = after.sha256 !== before.sha256 || after.size !== before.size;
+    if (changed) {
+        throw new Error(
+            `profile.md mutation detected during run and blocked. Expected immutable template at: ${before.absolutePath}`
+        );
+    }
+}
+
+function stripExternalAssetsForOfflineRender(html: string): string {
+    return html
+        .replace(/<link[^>]+rel=["']stylesheet["'][^>]*>/gi, '')
+        .replace(/@import\s+url\([^)]*\);?/gi, '');
+}
+
+async function setPageContentResilient(page: Page, html: string): Promise<void> {
+    try {
+        await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    } catch (err) {
+        const sanitized = stripExternalAssetsForOfflineRender(html);
+        await page.setContent(sanitized, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    }
+}
 
 async function estimateA4PageCount(page: Page): Promise<number> {
     await page.emulateMediaType('print');
@@ -189,9 +259,17 @@ program
     .action(async (options) => {
         const apiKey = process.env.GEMINI_API_KEY || "GATEWAY_MANAGED";
         try {
+            const profilePath = path.resolve(options.profile);
+            const jobPath = path.resolve(options.job);
+            const requestedOutPath = path.resolve(options.out);
+
+            assertNotProfileWriteTargetOrThrow(requestedOutPath, profilePath, '--out');
+            assertNotProfileWriteTargetOrThrow(jobPath, profilePath, '--job');
+            const profileSnapshotBefore = takeProfileSnapshot(profilePath);
+
             console.log("[STAGE:START] Reading profile and job data...");
-            const profileContent = fs.readFileSync(path.resolve(options.profile), 'utf-8');
-            const jobContent = fs.readFileSync(path.resolve(options.job), 'utf-8');
+            const profileContent = fs.readFileSync(profilePath, 'utf-8');
+            const jobContent = fs.readFileSync(jobPath, 'utf-8');
 
             const jobDetails = {
                 title: "AI Analysis in Progress",
@@ -217,14 +295,16 @@ program
 
             const browser = await puppeteer.launch({ headless: true });
             const page = await browser.newPage();
-            await page.setContent(finalHtml, { waitUntil: 'networkidle0' });
+            page.setDefaultNavigationTimeout(45000);
+            page.setDefaultTimeout(45000);
+            await setPageContentResilient(page, finalHtml);
 
             let estimatedPageCount = await estimateA4PageCount(page);
             if (estimatedPageCount > 1 && strictOnePage) {
                 for (let attempt = 1; attempt <= MAX_ONE_PAGE_COMPACTION_ATTEMPTS && estimatedPageCount > 1; attempt++) {
                     console.log(`📉 One-page guardrail: compaction attempt ${attempt}/${MAX_ONE_PAGE_COMPACTION_ATTEMPTS}...`);
                     finalHtml = await enforceOnePageResume(finalHtml, jobDetails, profile, apiKey, selectedModel, strictLinkIntegrity);
-                    await page.setContent(finalHtml, { waitUntil: 'networkidle0' });
+                    await setPageContentResilient(page, finalHtml);
                     estimatedPageCount = await estimateA4PageCount(page);
                 }
             }
@@ -239,16 +319,20 @@ program
             }
 
             const finalOutputPath = getSafeOutputPath(options.out);
+            assertNotProfileWriteTargetOrThrow(finalOutputPath, profilePath, 'final-output');
             await page.pdf({
                 path: finalOutputPath,
                 format: 'A4',
                 printBackground: true
             });
 
+            assertProfileUnchangedOrThrow(profileSnapshotBefore);
+
             await browser.close();
             console.log(`✅ Success! CV saved to: ${finalOutputPath}`);
         } catch (e: any) {
             console.error(`❌ Generation failed: ${e.message}`);
+            process.exitCode = 1;
         }
     });
 
