@@ -1,1 +1,7 @@
 ﻿job_id,notice_type,sent_at
+test-003-20260305202004,invalid_thumbs_up,2026-03-05 20:22:41
+test-002-20260305202004,invalid_thumbs_up,2026-03-05 20:22:41
+test-001-20260305202004,invalid_thumbs_up,2026-03-05 20:23:55
+test-003-20260305210513,invalid_thumbs_up,2026-03-05 21:11:44
+test-003-20260306210156,invalid_thumbs_up,2026-03-06 21:02:04
+test-003-20260306213334,invalid_thumbs_up,2026-03-06 21:33:42

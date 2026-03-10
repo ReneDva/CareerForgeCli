@@ -1,0 +1,103 @@
+{
+  "created_at_utc": "2026-03-10T11:11:19.0612541Z",
+  "scope": "all_private_chats_pre_sync",
+  "commands_count": 24,
+  "commands": [
+    {
+      "command": "search_start",
+      "description": "Alias: direct CLI search"
+    },
+    {
+      "command": "search_timer",
+      "description": "Set auto search interval (e.g. 6h/2d)"
+    },
+    {
+      "command": "search_stop",
+      "description": "Stop auto search scheduler"
+    },
+    {
+      "command": "search_config",
+      "description": "Show current search config and scheduler"
+    },
+    {
+      "command": "search_set",
+      "description": "Update search config key/value"
+    },
+    {
+      "command": "commands",
+      "description": "List all slash commands."
+    },
+    {
+      "command": "start",
+      "description": "Initialize chat and show current status"
+    },
+    {
+      "command": "restart",
+      "description": "Hot-restart the agent"
+    },
+    {
+      "command": "status",
+      "description": "Show gateway/skills/model status"
+    },
+    {
+      "command": "stop",
+      "description": "Stop current agent run"
+    },
+    {
+      "command": "paths",
+      "description": "Show OpenClaw config/state/workspace paths"
+    },
+    {
+      "command": "search",
+      "description": "Alias: direct CLI search"
+    },
+    {
+      "command": "jobs",
+      "description": "Show latest jobs summary"
+    },
+    {
+      "command": "profile",
+      "description": "Show active profile information"
+    },
+    {
+      "command": "help",
+      "description": "List available commands"
+    },
+    {
+      "command": "log",
+      "description": "Show recent logs"
+    },
+    {
+      "command": "models",
+      "description": "List available OpenClaw models"
+    },
+    {
+      "command": "model",
+      "description": "Show or set active OpenClaw model"
+    },
+    {
+      "command": "open_tasks",
+      "description": "Show all non-closed tasks"
+    },
+    {
+      "command": "search_agent",
+      "description": "Agent-filtered search (AI mode)"
+    },
+    {
+      "command": "search_cli",
+      "description": "Direct CLI search + per-job notifications"
+    },
+    {
+      "command": "mode_status",
+      "description": "Show active search runtime mode"
+    },
+    {
+      "command": "mode_cli",
+      "description": "Set runtime mode to direct CLI automation"
+    },
+    {
+      "command": "mode_agent",
+      "description": "Set runtime mode to agent-filtered behavior"
+    }
+  ]
+}

@@ -56,7 +56,7 @@ function Send-JobIterationOutcomeMessage {
         return
     }
 
-    $jobId = if ($Job.id) { "$($Job.id)" } else { "unknown-$SequenceNumber" }
+    $jobId = Resolve-TrackerJobId -Job $Job
     $company = if ($Job.company) { "$($Job.company)" } else { 'Unknown' }
     $title = if ($Job.title) { "$($Job.title)" } else { 'Unknown' }
     $location = if ($Job.location) { "$($Job.location)" } else { 'Unknown' }
@@ -88,6 +88,68 @@ function Send-JobIterationOutcomeMessage {
     }
 }
 
+function Normalize-TrackerText {
+    param([Parameter(Mandatory=$false)]$Value)
+
+    if ($null -eq $Value) { return '' }
+    return ("$Value").Trim().ToLowerInvariant()
+}
+
+function Get-ExistingTrackedJobIdForDedupe {
+    param(
+        [Parameter(Mandatory=$true)][string]$TrackerPath,
+        [Parameter(Mandatory=$true)]$Job
+    )
+
+    $rows = Get-TrackerRows -TrackerPath $TrackerPath
+    if (-not $rows -or @($rows).Count -eq 0) {
+        return ''
+    }
+
+    $jobUrlNorm = Normalize-TrackerText -Value $Job.job_url
+    if (-not [string]::IsNullOrWhiteSpace($jobUrlNorm)) {
+        $match = @($rows | Where-Object { (Normalize-TrackerText -Value $_.job_url) -eq $jobUrlNorm } | Select-Object -First 1)
+        if ($match.Count -gt 0 -and $match[0].job_id) {
+            return "$($match[0].job_id)"
+        }
+    }
+
+    $titleNorm = Normalize-TrackerText -Value $Job.title
+    $companyNorm = Normalize-TrackerText -Value $Job.company
+    $locationNorm = Normalize-TrackerText -Value $Job.location
+    if (-not [string]::IsNullOrWhiteSpace($titleNorm) -or -not [string]::IsNullOrWhiteSpace($companyNorm)) {
+        $match = @($rows | Where-Object {
+            (Normalize-TrackerText -Value $_.title) -eq $titleNorm -and
+            (Normalize-TrackerText -Value $_.company) -eq $companyNorm -and
+            (Normalize-TrackerText -Value $_.location) -eq $locationNorm
+        } | Select-Object -First 1)
+
+        if ($match.Count -gt 0 -and $match[0].job_id) {
+            return "$($match[0].job_id)"
+        }
+    }
+
+    return ''
+}
+
+function Get-NextSequentialTrackerJobId {
+    param([Parameter(Mandatory=$true)][string]$TrackerPath)
+
+    $rows = Get-TrackerRows -TrackerPath $TrackerPath
+    $maxNum = 0
+
+    foreach ($r in @($rows)) {
+        $idText = if ($r.job_id) { "$($r.job_id)" } else { '' }
+        if ($idText -match '^job-(\d+)$') {
+            $n = [int]$matches[1]
+            if ($n -gt $maxNum) { $maxNum = $n }
+        }
+    }
+
+    $next = $maxNum + 1
+    return ('job-{0:d6}' -f $next)
+}
+
 Initialize-JobTracker -TrackerPath $jobTrackerFile
 
 # --- Main Processing Logic ---
@@ -113,16 +175,34 @@ if (Test-Path $jobsFoundFile) {
 
             foreach ($job in $sortedJobs) {
                 $sequence += 1
+                $resolvedJobId = ''
+
                 if (-not ($job.job_url)) {
-                    Write-Host "Skipping job with no URL: $($job.id)"
+                    Write-Host "Skipping job with no URL: $(if ($job.title) { $job.title } else { 'unknown_job' })"
                     $missingUrlCount += 1
                     $skippedCount += 1
-                    Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'SKIPPED' -ReasonText 'missing_job_url' -BotToken $telegramBotToken -ChatId $telegramChatId
                     continue
                 }
 
+                $existingTrackedId = Get-ExistingTrackedJobIdForDedupe -TrackerPath $jobTrackerFile -Job $job
+                if (-not [string]::IsNullOrWhiteSpace($existingTrackedId)) {
+                    Write-Host "Job already tracked (dedupe match=$existingTrackedId). Skipping duplicate notification."
+                    $duplicateCount += 1
+                    $skippedCount += 1
+                    try {
+                        $job | Add-Member -NotePropertyName id -NotePropertyValue $existingTrackedId -Force
+                    } catch {}
+                    Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'SKIPPED' -ReasonText 'already_tracked_duplicate' -BotToken $telegramBotToken -ChatId $telegramChatId
+                    continue
+                }
+
+                $resolvedJobId = Get-NextSequentialTrackerJobId -TrackerPath $jobTrackerFile
+                try {
+                    $job | Add-Member -NotePropertyName id -NotePropertyValue $resolvedJobId -Force
+                } catch {}
+
                 if (-not (Test-JobLink -JobUrl $job.job_url)) {
-                    Write-Host "Discarding job '$($job.id)' due to inactive link."
+                    Write-Host "Discarding job '$resolvedJobId' due to inactive link."
                     $invalidLinkCount += 1
                     $skippedCount += 1
                     Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'SKIPPED' -ReasonText 'inactive_or_invalid_link' -BotToken $telegramBotToken -ChatId $telegramChatId
@@ -133,7 +213,7 @@ if (Test-Path $jobsFoundFile) {
                 try {
                     $isNewJob = Add-FoundJobIfMissing -TrackerPath $jobTrackerFile -Job $job -Source "job_search_wrapper"
                 } catch {
-                    Write-Host "State tracking error for job '$($job.id)': $_"
+                    Write-Host "State tracking error for job '$resolvedJobId': $_"
                     continue
                 }
 
@@ -141,41 +221,41 @@ if (Test-Path $jobsFoundFile) {
                     $message = Format-TelegramJobMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count
 
                     if ($telegramBotToken) {
-                        Write-Host "Sending Telegram message for job $($job.id)..."
+                        Write-Host "Sending Telegram message for job $resolvedJobId..."
                         try {
                             $tgResp = Send-TelegramTextDeterministic -BotToken $telegramBotToken -ChatId $telegramChatId -Text $message -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode "HTML"
                             $messageId = if ($tgResp.result.message_id) { "$($tgResp.result.message_id)" } else { "" }
                             if (-not [string]::IsNullOrWhiteSpace($messageId)) {
-                                Register-TelegramMessageMap -JobId "$($job.id)" -ChatId "$telegramChatId" -MessageId $messageId
+                                Register-TelegramMessageMap -JobId "$resolvedJobId" -ChatId "$telegramChatId" -MessageId $messageId
                             }
-                            Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$($job.id)" -NewStatus "Sent" -Reason "Job notification sent to Telegram" -FieldUpdates @{ telegram_message_id = $messageId }
-                            Write-DispatchLog -JobId "$($job.id)" -Status "Sent" -Reason "telegram_message_dispatched"
-                            Write-Host "Telegram message sent for job $($job.id)."
+                            Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$resolvedJobId" -NewStatus "Sent" -Reason "Job notification sent to Telegram" -FieldUpdates @{ telegram_message_id = $messageId }
+                            Write-DispatchLog -JobId "$resolvedJobId" -Status "Sent" -Reason "telegram_message_dispatched"
+                            Write-Host "Telegram message sent for job $resolvedJobId."
                             $sentCount += 1
                             Start-Sleep -Seconds 5
                         } catch {
                             try {
-                                Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$($job.id)" -NewStatus "Apply_Failed" -Reason "Failed to send Telegram notification" -FieldUpdates @{ last_error = "$_" }
-                                Write-DispatchLog -JobId "$($job.id)" -Status "Apply_Failed" -Reason "telegram_send_failed"
+                                Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$resolvedJobId" -NewStatus "Apply_Failed" -Reason "Failed to send Telegram notification" -FieldUpdates @{ last_error = "$_" }
+                                Write-DispatchLog -JobId "$resolvedJobId" -Status "Apply_Failed" -Reason "telegram_send_failed"
                             } catch {
-                                Write-Host "Failed to persist failure state for job $($job.id): $_"
+                                Write-Host "Failed to persist failure state for job ${resolvedJobId}: $_"
                             }
-                            Write-Host "ERROR sending Telegram message for job $($job.id): $_"
+                            Write-Host "ERROR sending Telegram message for job ${resolvedJobId}: $_"
                             $skippedCount += 1
                             Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'FAILED' -ReasonText 'telegram_send_failed' -BotToken $telegramBotToken -ChatId $telegramChatId
                         }
                     } else {
                         try {
-                            Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$($job.id)" -NewStatus "Apply_Failed" -Reason "Missing TELEGRAM_BOT_TOKEN" -FieldUpdates @{ last_error = "TELEGRAM_BOT_TOKEN is not set" }
+                            Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$resolvedJobId" -NewStatus "Apply_Failed" -Reason "Missing TELEGRAM_BOT_TOKEN" -FieldUpdates @{ last_error = "TELEGRAM_BOT_TOKEN is not set" }
                         } catch {
-                            Write-Host "Failed to persist missing-token state for job $($job.id): $_"
+                            Write-Host "Failed to persist missing-token state for job ${resolvedJobId}: $_"
                         }
-                        Write-Host "Skipping Telegram message for job $($job.id): TELEGRAM_BOT_TOKEN is not set."
+                        Write-Host "Skipping Telegram message for job ${resolvedJobId}: TELEGRAM_BOT_TOKEN is not set."
                         Write-Host "Job Details (not sent): Company: $($job.company), Title: $($job.title), Location: $($job.location)"
                         $skippedCount += 1
                     }
                 } else {
-                    Write-Host "Job $($job.id) already tracked. Skipping duplicate notification."
+                    Write-Host "Job $resolvedJobId already tracked. Skipping duplicate notification."
                     $duplicateCount += 1
                     $skippedCount += 1
                     Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'SKIPPED' -ReasonText 'already_tracked_duplicate' -BotToken $telegramBotToken -ChatId $telegramChatId

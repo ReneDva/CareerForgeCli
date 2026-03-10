@@ -1,0 +1,14 @@
+Title: Junior AI / Machine Learning Engineer
+Company: Example Tech
+Location: Tel Aviv, Israel
+
+Job Description:
+We are looking for a Junior AI Engineer to join our team.
+Responsibilities include building and evaluating ML models, data preprocessing,
+feature engineering, experimentation, and collaborating with software teams.
+
+Requirements:
+- B.Sc. in Computer Science or related field
+- Experience with Python, pandas, NumPy
+- Familiarity with machine learning frameworks (PyTorch / scikit-learn)
+- Strong communication and teamwork skills

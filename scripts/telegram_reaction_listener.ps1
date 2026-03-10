@@ -25,6 +25,9 @@ $telegramCommandsBackupDir = Join-Path $workspaceRoot 'memory/telegram_command_b
 $searchConfigPath = Join-Path $workspaceRoot 'search_config.json'
 $searchWrapperScriptPath = Join-Path $workspaceRoot 'job_search_wrapper.ps1'
 $processJobsScriptPath = Join-Path $workspaceRoot 'process_jobs.ps1'
+$listenerStdoutLogPath = Join-Path $workspaceRoot 'memory/telegram_listener_background.log'
+$listenerStderrLogPath = Join-Path $workspaceRoot 'memory/telegram_listener_background.err.log'
+$dispatchLogPath = Join-Path $workspaceRoot 'memory/telegram_dispatch.log'
 $invalidReactionCooldownSeconds = 120
 $script:InvalidReactionNoticeCache = @{}
 $script:SearchRunInProgress = $false
@@ -186,6 +189,50 @@ function Get-JobById {
     }
 
     return $null
+}
+
+function Get-FileTailText {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [int]$TailLines = 20
+    )
+
+    if (-not (Test-Path $Path)) {
+        return '(log file missing)'
+    }
+
+    try {
+        $lines = Get-Content -Path $Path -Tail $TailLines -ErrorAction Stop
+        $text = @($lines) -join "`n"
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return '(log file is empty)'
+        }
+        return $text
+    } catch {
+        return "(failed to read log: $($_.Exception.Message))"
+    }
+}
+
+function Get-RecentSystemLogsMessage {
+    param([int]$TailLines = 20)
+
+    $outText = Get-FileTailText -Path $listenerStdoutLogPath -TailLines $TailLines
+    $errText = Get-FileTailText -Path $listenerStderrLogPath -TailLines $TailLines
+    $dispatchText = Get-FileTailText -Path $dispatchLogPath -TailLines $TailLines
+
+    $outEsc = [System.Security.SecurityElement]::Escape($outText)
+    $errEsc = [System.Security.SecurityElement]::Escape($errText)
+    $dispatchEsc = [System.Security.SecurityElement]::Escape($dispatchText)
+
+    return @(
+        '&#128221; <b>Recent system logs</b>',
+        "OUT (<code>$TailLines</code> lines):",
+        "<pre>$outEsc</pre>",
+        "ERR (<code>$TailLines</code> lines):",
+        "<pre>$errEsc</pre>",
+        "DISPATCH (<code>$TailLines</code> lines):",
+        "<pre>$dispatchEsc</pre>"
+    ) -join "`n"
 }
 
 function Get-NextCvPath {
@@ -1368,10 +1415,14 @@ function Resolve-VisibleTelegramCommands {
 
 function Merge-TelegramCommands {
     param(
-        [Parameter(Mandatory=$true)]$ExistingCommands,
+        $ExistingCommands,
         [Parameter(Mandatory=$true)]$DesiredCommands,
         [bool]$PreserveExisting = $true
     )
+
+    if ($null -eq $ExistingCommands) {
+        $ExistingCommands = @()
+    }
 
     $merged = @()
     $indexByName = @{}
@@ -2028,6 +2079,16 @@ while ($true) {
                             Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
                         } catch {
                             Write-Host "Failed to send /open_tasks response: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/log' -or $text -like '/log@*') {
+                        try {
+                            $msg = Get-RecentSystemLogsMessage -TailLines 20
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to send /log response: $_"
                         }
                         continue
                     }

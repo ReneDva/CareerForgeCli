@@ -1,6 +1,23 @@
 # OpenClaw + Telegram Integration Plan (CareerForge)
 
-_Last updated: 2026-03-06_
+_Last updated: 2026-03-10_
+
+## Current Snapshot (2026-03-10)
+
+- `/search_cli` runtime parser failure was fixed in `process_jobs.ps1` (PowerShell variable interpolation with colon).
+- `/log` command is now fully implemented in `scripts/telegram_reaction_listener.ps1` and returns recent listener stdout/stderr + dispatch logs.
+- Search dispatch path now uses stronger dedupe:
+   - URL match first,
+   - fallback to title+company+location.
+- New tracker IDs for newly discovered jobs are now sequential (`job-000001`, `job-000002`, ...), allocated from current max in `job_tracker.csv`.
+- Added operational scripts for controlled lifecycle:
+   - `scripts/start_telegram_listener_background.ps1`
+   - `scripts/stop_telegram_listener_background.ps1`
+   - `scripts/restart_telegram_system_and_follow_logs.ps1`
+   - root wrapper `restart_telegram_system_and_follow_logs.ps1`
+- Added cleanup/reset helper:
+   - `scripts/reset_tracker_keep_corephotonics.ps1`
+   - supports preserving one canonical row and cleaning generated test artifacts.
 
 ## 1) Goal
 

@@ -1,0 +1,267 @@
+{
+  "created_at_utc": "2026-03-10T11:37:26.0893204Z",
+  "scope": "default_pre_sync",
+  "commands_count": 65,
+  "commands": [
+    {
+      "command": "help",
+      "description": "List available commands"
+    },
+    {
+      "command": "commands",
+      "description": "List all slash commands."
+    },
+    {
+      "command": "skill",
+      "description": "Run a skill by name."
+    },
+    {
+      "command": "status",
+      "description": "Show gateway/skills/model status"
+    },
+    {
+      "command": "approve",
+      "description": "Approve or deny exec requests."
+    },
+    {
+      "command": "context",
+      "description": "Explain how context is built and used."
+    },
+    {
+      "command": "export_session",
+      "description": "Export current session to HTML file with full system prompt."
+    },
+    {
+      "command": "tts",
+      "description": "Control text-to-speech (TTS)."
+    },
+    {
+      "command": "whoami",
+      "description": "Show your sender id."
+    },
+    {
+      "command": "session",
+      "description": "Manage session-level settings (for example /session idle)."
+    },
+    {
+      "command": "subagents",
+      "description": "List, kill, log, spawn, or steer subagent runs for this session."
+    },
+    {
+      "command": "acp",
+      "description": "Manage ACP sessions and runtime options."
+    },
+    {
+      "command": "focus",
+      "description": "Bind this Discord thread (or a new one) to a session target."
+    },
+    {
+      "command": "unfocus",
+      "description": "Remove the current Discord thread binding."
+    },
+    {
+      "command": "agents",
+      "description": "List thread-bound agents for this session."
+    },
+    {
+      "command": "kill",
+      "description": "Kill a running subagent (or all)."
+    },
+    {
+      "command": "steer",
+      "description": "Send guidance to a running subagent."
+    },
+    {
+      "command": "usage",
+      "description": "Usage footer or cost summary."
+    },
+    {
+      "command": "stop",
+      "description": "Stop current agent run"
+    },
+    {
+      "command": "restart",
+      "description": "Hot-restart the agent"
+    },
+    {
+      "command": "activation",
+      "description": "Set group activation mode."
+    },
+    {
+      "command": "send",
+      "description": "Set send policy."
+    },
+    {
+      "command": "reset",
+      "description": "Reset the current session."
+    },
+    {
+      "command": "new",
+      "description": "Start a new session."
+    },
+    {
+      "command": "compact",
+      "description": "Compact the session context."
+    },
+    {
+      "command": "think",
+      "description": "Set thinking level."
+    },
+    {
+      "command": "verbose",
+      "description": "Toggle verbose mode."
+    },
+    {
+      "command": "reasoning",
+      "description": "Toggle reasoning visibility."
+    },
+    {
+      "command": "elevated",
+      "description": "Toggle elevated mode."
+    },
+    {
+      "command": "exec",
+      "description": "Set exec defaults for this session."
+    },
+    {
+      "command": "model",
+      "description": "Show or set active OpenClaw model"
+    },
+    {
+      "command": "models",
+      "description": "List available OpenClaw models"
+    },
+    {
+      "command": "queue",
+      "description": "Adjust queue settings."
+    },
+    {
+      "command": "dock_telegram",
+      "description": "Switch to telegram for replies."
+    },
+    {
+      "command": "dock_discord",
+      "description": "Switch to discord for replies."
+    },
+    {
+      "command": "dock_slack",
+      "description": "Switch to slack for replies."
+    },
+    {
+      "command": "clawhub",
+      "description": "Use the ClawHub CLI to search, install, update, and publish agent skills from clawhub.com. Use when."
+    },
+    {
+      "command": "gh_issues",
+      "description": "Fetch GitHub issues, spawn sub-agents to implement fixes and open PRs, then monitor and address PR ."
+    },
+    {
+      "command": "github",
+      "description": "GitHub operations via `gh` CLI: issues, PRs, CI runs, code review, API queries. Use when: (1) check."
+    },
+    {
+      "command": "healthcheck",
+      "description": "Host security hardening and risk-tolerance configuration for OpenClaw deployments. Use when a user ."
+    },
+    {
+      "command": "mcporter",
+      "description": "Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio),."
+    },
+    {
+      "command": "session_logs",
+      "description": "Search and analyze your own session logs (older/parent conversations) using jq."
+    },
+    {
+      "command": "skill_creator",
+      "description": "Create or update AgentSkills. Use when designing, structuring, or packaging skills with scripts, re."
+    },
+    {
+      "command": "video_frames",
+      "description": "Extract frames or short clips from videos using ffmpeg."
+    },
+    {
+      "command": "weather",
+      "description": "Get current weather and forecasts via wttr.in or Open-Meteo. Use when: user asks about weather, tem."
+    },
+    {
+      "command": "pair",
+      "description": "Generate setup codes and approve device pairing requests."
+    },
+    {
+      "command": "phone",
+      "description": "Arm/disarm high-risk phone node commands (camera/screen/writes)."
+    },
+    {
+      "command": "voice",
+      "description": "List/set ElevenLabs Talk voice (affects iOS Talk playback)."
+    },
+    {
+      "command": "start",
+      "description": "Initialize chat and show current status"
+    },
+    {
+      "command": "paths",
+      "description": "Show OpenClaw config/state/workspace paths"
+    },
+    {
+      "command": "search",
+      "description": "Alias: direct CLI search"
+    },
+    {
+      "command": "search_start",
+      "description": "Alias: direct CLI search"
+    },
+    {
+      "command": "search_timer",
+      "description": "Set auto search interval (e.g. 6h/2d)"
+    },
+    {
+      "command": "search_stop",
+      "description": "Stop auto search scheduler"
+    },
+    {
+      "command": "search_config",
+      "description": "Show current search config and scheduler"
+    },
+    {
+      "command": "search_set",
+      "description": "Update search config key/value"
+    },
+    {
+      "command": "jobs",
+      "description": "Show latest jobs summary"
+    },
+    {
+      "command": "profile",
+      "description": "Show active profile information"
+    },
+    {
+      "command": "log",
+      "description": "Show recent logs"
+    },
+    {
+      "command": "open_tasks",
+      "description": "Show all non-closed tasks"
+    },
+    {
+      "command": "search_agent",
+      "description": "Agent-filtered search (AI mode)"
+    },
+    {
+      "command": "search_cli",
+      "description": "Direct CLI search + per-job notifications"
+    },
+    {
+      "command": "mode_status",
+      "description": "Show active search runtime mode"
+    },
+    {
+      "command": "mode_cli",
+      "description": "Set runtime mode to direct CLI automation"
+    },
+    {
+      "command": "mode_agent",
+      "description": "Set runtime mode to agent-filtered behavior"
+    }
+  ]
+}

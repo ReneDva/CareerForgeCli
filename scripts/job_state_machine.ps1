@@ -34,6 +34,36 @@ function Get-NowIso {
     return (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
 }
 
+function Get-DeterministicShortHash {
+    param([Parameter(Mandatory=$true)][string]$InputText)
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($InputText)
+    $hashBytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    $hex = -join ($hashBytes | ForEach-Object { $_.ToString('x2') })
+    return $hex.Substring(0, 16)
+}
+
+function Resolve-TrackerJobId {
+    param([Parameter(Mandatory=$true)]$Job)
+
+    if ($Job.id -and -not [string]::IsNullOrWhiteSpace("$($Job.id)")) {
+        return "$($Job.id)"
+    }
+
+    if ($Job.job_url -and -not [string]::IsNullOrWhiteSpace("$($Job.job_url)")) {
+        $normalizedUrl = ("$($Job.job_url)").Trim().ToLowerInvariant()
+        return "url-$(Get-DeterministicShortHash -InputText $normalizedUrl)"
+    }
+
+    $title = if ($Job.title) { ("$($Job.title)").Trim().ToLowerInvariant() } else { '' }
+    $company = if ($Job.company) { ("$($Job.company)").Trim().ToLowerInvariant() } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($title) -or -not [string]::IsNullOrWhiteSpace($company)) {
+        return "tc-$(Get-DeterministicShortHash -InputText ("$title|$company"))"
+    }
+
+    throw 'Job is missing id, job_url, and title/company fallback; cannot derive tracker job_id.'
+}
+
 function New-TrackerRow {
     param(
         [Parameter(Mandatory=$true)]$Job,
@@ -42,8 +72,9 @@ function New-TrackerRow {
     )
 
     $now = Get-NowIso
+    $resolvedJobId = Resolve-TrackerJobId -Job $Job
     return [PSCustomObject]@{
-        job_id            = if ($Job.id) { "$($Job.id)" } else { '' }
+        job_id            = $resolvedJobId
         source            = $Source
         title             = if ($Job.title) { "$($Job.title)" } else { '' }
         company           = if ($Job.company) { "$($Job.company)" } else { '' }
@@ -192,11 +223,7 @@ function Add-FoundJobIfMissing {
     )
 
     $rows = Get-TrackerRows -TrackerPath $TrackerPath
-    $jobId = if ($Job.id) { "$($Job.id)" } else { '' }
-
-    if ([string]::IsNullOrWhiteSpace($jobId)) {
-        throw 'Job is missing required id field; cannot track state transitions.'
-    }
+    $jobId = Resolve-TrackerJobId -Job $Job
 
     $idx = Find-JobRowIndex -Rows $rows -JobId $jobId
     if ($idx -ge 0) {

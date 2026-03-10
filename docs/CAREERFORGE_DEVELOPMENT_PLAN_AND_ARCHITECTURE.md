@@ -1,6 +1,17 @@
 # CareerForge — Development Plan & Recommended Architecture
 
-_Last updated: 2026-03-06_
+_Last updated: 2026-03-10_
+
+## עדכון מצב ביצוע (2026-03-10)
+
+- תוקנה תקלה קריטית ב-`/search_cli` שנבעה מ-PowerShell parsing ב-`process_jobs.ps1`.
+- מומש handler מלא לפקודת `/log` במאזין הטלגרם, כולל tail ללוגי listener/dispatch.
+- נוספה דדופליקציה יציבה יותר ב-dispatch:
+  - התאמה לפי `job_url` תחילה,
+  - ואז `title+company+location`.
+- מנגנון מזהי משרה פנימי עודכן למזהים רציפים `job-XXXXXX` עבור משרות חדשות.
+- בוצע איפוס מבוקר של הטראקר להשארת רשומת עוגן אחת בלבד (corephotonics) והוסרו ארטיפקטים ישנים של בדיקות.
+- נוספו סקריפטי תפעול לריסטארט/עצירה/הפעלה וניטור לוגים רציף, להפחתת תקלות multi-consumer ב-Telegram polling.
 
 מסמך זה מיועד לשימוש פיתוח שוטף (Assistant + User) ולתיעוד מוצרי/טכני של המערכת.
 

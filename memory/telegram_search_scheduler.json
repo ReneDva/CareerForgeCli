@@ -1,0 +1,8 @@
+﻿{
+    "enabled":  false,
+    "interval_seconds":  0,
+    "next_run_utc":  null,
+    "last_run_utc":  null,
+    "last_status":  "never",
+    "last_error":  ""
+}
