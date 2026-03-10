@@ -29,6 +29,12 @@ _Last updated: 2026-03-10_
    - Added worker immediate-exit health check (2s) after spawn; if worker exits early, transition to `Apply_Failed` with explicit `last_error` path.
    - Extended `/log` output to include latest worker stdout/stderr tails for fast diagnosis.
    - Relaxed CV education guardrail enforcement in generation runtime to immutable core facts only (degree/program, institution, years), preventing false failures from wording compaction.
+   - Added debug-generation fallback policy in `telegram_cv_generation_worker.ps1`:
+      - If strict one-page guardrail fails, retry with `--no-strict-one-page` and still send PDF for diagnostic review.
+      - If strict personal/link guardrails fail (e.g. injected residence/address metadata), retry with `--no-strict-link-integrity --no-strict-one-page` and send PDF for diagnostic review.
+   - Approval reaction handling hardened:
+      - `🚀/❤️/🔥` approval reactions are no longer blocked by mapped-message age window checks.
+      - Draft PDF Telegram message IDs are now mapped back to `job_id`, so approval reaction on the draft document reliably triggers manual-apply package flow.
 
 ## 1) Goal
 
@@ -233,6 +239,8 @@ Controller returns:
    - if tracker row is removed mid-run, worker recovery path either restores row and completes, or fails with explicit recovery error in `last_error`.
    - job titles containing spaces/punctuation no longer crash worker launch argument parsing.
    - `/log` includes worker logs and displays generation failure reason without opening files manually.
+   - strict guardrail failures still produce a debug PDF artifact via fallback mode for content diagnosis.
+   - approval reaction on old draft messages (`🚀/❤️/🔥`) still resolves to package flow when job status is eligible.
 
 ## Runtime prerequisite note
 - CV generation success depends on active generation runtime/agent context.

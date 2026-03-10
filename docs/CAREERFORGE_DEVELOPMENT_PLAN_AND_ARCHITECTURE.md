@@ -16,6 +16,13 @@ _Last updated: 2026-03-10_
   - תוקן quoting של ארגומנטים להפעלת `telegram_cv_generation_worker.ps1` כדי למנוע PowerShell parse errors בכותרות עם רווחים (למשל `Full Stack ...`).
   - נוספו לוגים פר-משרה ל-worker (`telegram_cv_worker_<job_id>.log/.err.log`) + בדיקת immediate-exit שמעדכנת `Apply_Failed` במקום להיתקע על `CV_Generating`.
   - רוכך אימות Education ב-runtime ל-core facts בלבד (degree/program, institution, years), במקום נעילת שורות מלאה שגרמה ל-false failures.
+- תועדו וטופלו כשלים נוספים (2026-03-10, PM):
+  - כשל strict one-page (`Rendered CV exceeds one A4 page`) גרם ל-`Apply_Failed` ללא PDF דיבאג.
+    - טיפול: fallback אוטומטי שמריץ `generate` עם `--no-strict-one-page` ושולח PDF לבדיקה.
+  - כשל strict personal/link guardrails (למשל injected location/address) גרם ל-`Apply_Failed` ללא ארטיפקט לבדיקה.
+    - טיפול: fallback דיבאג נוסף עם `--no-strict-link-integrity --no-strict-one-page` לצורך יצירת PDF אבחוני.
+  - ריאקציית אישור (`🔥/❤️/🚀`) התעלמה על הודעות ישנות עקב mapped-message window.
+    - טיפול: ביטול הגבלת חלון הזמן עבור ריאקציות אישור בלבד + מיפוי `message_id` גם להודעת ה-PDF עצמה.
 
 מסמך זה מיועד לשימוש פיתוח שוטף (Assistant + User) ולתיעוד מוצרי/טכני של המערכת.
 
@@ -140,6 +147,9 @@ _Last updated: 2026-03-10_
 - בדיקת התאוששות Worker: אם רשומת `job_id` נמחקת מהטראקר בזמן ריצת worker אסינכרונית, ה-worker מנסה לשחזר את הרשומה ממקור jobs/snapshot; במקרה כשל מתועד `last_error` ברור.
 - בדיקת worker-launch args: משרה עם כותרת הכוללת רווחים (לדוגמה `Full Stack Engineer`) אינה מפילה את ההפעלה, וה-worker נשאר רץ מעבר ל-health window.
 - בדיקת guardrails: במקרה שבו ניסוח סעיף Education משתנה אך core facts נשמרים, ה-generation אינו נכשל.
+- בדיקת fallback one-page: במקרה strict one-page failure, מתקבל PDF debug והסטטוס מתקדם ל-`CV_Ready_For_Review` עם הערת fallback.
+- בדיקת fallback strict-guardrails: במקרה strict personal/link failure, מתקבל PDF debug והמערכת מתעדת שהרצה בוצעה ב-relaxed debug mode.
+- בדיקת approval-age-window: ריאקציית `🔥/❤️/🚀` על הודעת draft ותיקה עדיין מפעילה manual-apply package כאשר הסטטוס חוקי.
 
 #### בדיקת End-to-End מומלצת (ידנית)
 1. להריץ שליחת הודעות ניסיון: `powershell -NoProfile -File scripts/telegram_send_test_messages.ps1 -Count 3`
