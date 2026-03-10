@@ -29,6 +29,7 @@ $listenerStdoutLogPath = Join-Path $workspaceRoot 'memory/telegram_listener_back
 $listenerStderrLogPath = Join-Path $workspaceRoot 'memory/telegram_listener_background.err.log'
 $dispatchLogPath = Join-Path $workspaceRoot 'memory/telegram_dispatch.log'
 $invalidReactionCooldownSeconds = 120
+$cvGeneratingRetryAfterMinutes = 10
 $script:InvalidReactionNoticeCache = @{}
 $script:SearchRunInProgress = $false
 
@@ -36,6 +37,8 @@ Initialize-JobTracker -TrackerPath $trackerPath
 
 $thumbsUpEmoji = [char]::ConvertFromUtf32(0x1F44D)
 $rocketEmoji = [char]::ConvertFromUtf32(0x1F680)
+$heartEmoji = [char]::ConvertFromUtf32(0x2764)
+$fireEmoji = [char]::ConvertFromUtf32(0x1F525)
 
 function Get-Offset {
     if (Test-Path $offsetPath) {
@@ -220,9 +223,28 @@ function Get-RecentSystemLogsMessage {
     $errText = Get-FileTailText -Path $listenerStderrLogPath -TailLines $TailLines
     $dispatchText = Get-FileTailText -Path $dispatchLogPath -TailLines $TailLines
 
+    $latestWorkerOutPath = ''
+    $latestWorkerErrPath = ''
+    try {
+        $workerOutCandidates = @(Get-ChildItem -Path (Join-Path $workspaceRoot 'memory') -Filter 'telegram_cv_worker_*.log' -File | Sort-Object LastWriteTime -Descending)
+        if ($workerOutCandidates.Count -gt 0) {
+            $latestWorkerOutPath = "$($workerOutCandidates[0].FullName)"
+        }
+
+        $workerErrCandidates = @(Get-ChildItem -Path (Join-Path $workspaceRoot 'memory') -Filter 'telegram_cv_worker_*.err.log' -File | Sort-Object LastWriteTime -Descending)
+        if ($workerErrCandidates.Count -gt 0) {
+            $latestWorkerErrPath = "$($workerErrCandidates[0].FullName)"
+        }
+    } catch {}
+
+    $workerOutText = if ([string]::IsNullOrWhiteSpace($latestWorkerOutPath)) { '(worker log missing)' } else { Get-FileTailText -Path $latestWorkerOutPath -TailLines $TailLines }
+    $workerErrText = if ([string]::IsNullOrWhiteSpace($latestWorkerErrPath)) { '(worker err log missing)' } else { Get-FileTailText -Path $latestWorkerErrPath -TailLines $TailLines }
+
     $outEsc = [System.Security.SecurityElement]::Escape($outText)
     $errEsc = [System.Security.SecurityElement]::Escape($errText)
     $dispatchEsc = [System.Security.SecurityElement]::Escape($dispatchText)
+    $workerOutEsc = [System.Security.SecurityElement]::Escape($workerOutText)
+    $workerErrEsc = [System.Security.SecurityElement]::Escape($workerErrText)
 
     return @(
         '&#128221; <b>Recent system logs</b>',
@@ -231,7 +253,11 @@ function Get-RecentSystemLogsMessage {
         "ERR (<code>$TailLines</code> lines):",
         "<pre>$errEsc</pre>",
         "DISPATCH (<code>$TailLines</code> lines):",
-        "<pre>$dispatchEsc</pre>"
+        "<pre>$dispatchEsc</pre>",
+        "CV_WORKER_OUT (<code>$TailLines</code> lines):",
+        "<pre>$workerOutEsc</pre>",
+        "CV_WORKER_ERR (<code>$TailLines</code> lines):",
+        "<pre>$workerErrEsc</pre>"
     ) -join "`n"
 }
 
@@ -362,6 +388,8 @@ function Start-CvGenerationForJob {
     }
 
     $workerPath = Join-Path $PSScriptRoot 'telegram_cv_generation_worker.ps1'
+    $workerStdoutLogPath = Join-Path $workspaceRoot ("memory/telegram_cv_worker_" + $JobId + ".log")
+    $workerStderrLogPath = Join-Path $workspaceRoot ("memory/telegram_cv_worker_" + $JobId + ".err.log")
     if (-not (Test-Path $workerPath)) {
         Write-Host "CV generation worker script is missing: $workerPath"
         try {
@@ -392,17 +420,41 @@ function Start-CvGenerationForJob {
             }
         }
 
+        $escapeArg = {
+            param([string]$Value)
+            if ($null -eq $Value) { return '""' }
+            $escaped = "$Value".Replace('"', '""')
+            return '"' + $escaped + '"'
+        }
+
         $argList = @(
             '-NoProfile',
-            '-File', $workerPath,
-            '-JobId', $JobId,
-            '-BotToken', $BotToken,
-            '-ChatId', $ChatId,
-            '-ModelId', $activeModel
+            '-File', (& $escapeArg "$workerPath"),
+            '-JobId', (& $escapeArg "$JobId"),
+            '-BotToken', (& $escapeArg "$BotToken"),
+            '-ChatId', (& $escapeArg "$ChatId"),
+            '-ModelId', (& $escapeArg "$activeModel"),
+            '-JobTitle', (& $escapeArg "$($job.title)"),
+            '-JobCompany', (& $escapeArg "$($job.company)"),
+            '-JobLocation', (& $escapeArg "$($job.location)"),
+            '-JobUrl', (& $escapeArg "$($job.job_url)")
         )
 
-        Start-Process -FilePath $psHostPath -ArgumentList $argList -WindowStyle Hidden | Out-Null
-        Write-Host "Queued async CV generation worker for job_id=$JobId via host=$psHostPath"
+        $proc = Start-Process -FilePath $psHostPath -ArgumentList $argList -WindowStyle Hidden -RedirectStandardOutput $workerStdoutLogPath -RedirectStandardError $workerStderrLogPath -PassThru
+        Start-Sleep -Seconds 2
+        try { $proc.Refresh() } catch {}
+
+        if ($proc.HasExited) {
+            $exitCode = $proc.ExitCode
+            $launchErr = "CV worker exited immediately (exit=$exitCode). stderr log: $workerStderrLogPath"
+            Write-Host "Failed async CV worker health-check for '$JobId': $launchErr"
+            try {
+                Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'Apply_Failed' -Reason 'CV worker exited immediately' -FieldUpdates @{ last_error = $launchErr } -BotToken $BotToken -ChatId $ChatId -SuppressUserMessage | Out-Null
+            } catch {}
+            return $false
+        }
+
+        Write-Host "Queued async CV generation worker for job_id=$JobId via host=$psHostPath (pid=$($proc.Id) stdout=$workerStdoutLogPath stderr=$workerStderrLogPath)"
         return $true
     } catch {
         Write-Host "Failed to start async CV generation worker for '$JobId': $_"
@@ -420,14 +472,72 @@ function Get-JobTrackerRow {
     return $rows | Where-Object { "$($_.job_id)" -eq "$JobId" } | Select-Object -First 1
 }
 
+function Send-ManualApplyPackageForJob {
+    param(
+        [Parameter(Mandatory=$true)][string]$JobId,
+        [Parameter(Mandatory=$true)][string]$BotToken,
+        [Parameter(Mandatory=$true)][string]$ChatId
+    )
+
+    $row = Get-JobTrackerRow -JobId $JobId
+    if (-not $row) {
+        return $false
+    }
+
+    $currentStatus = "$($row.status)"
+    if ($currentStatus -eq 'CV_Ready_For_Review') {
+        $approved = Invoke-JobTransitionWithGuidance -JobId $JobId -NewStatus 'Approved_For_Apply' -Reason 'Manual CV approval confirmed via approval reaction' -BotToken $BotToken -ChatId $ChatId
+        if (-not $approved) {
+            return $false
+        }
+        $row = Get-JobTrackerRow -JobId $JobId
+    } elseif ($currentStatus -ne 'Approved_For_Apply') {
+        return $false
+    }
+
+    $latestCvPath = if ($row.latest_cv_path) { "$($row.latest_cv_path)" } else { '' }
+    if ([string]::IsNullOrWhiteSpace($latestCvPath) -or -not (Test-Path $latestCvPath)) {
+        $msg = "&#9888;&#65039; Cannot prepare manual apply package for <b>$JobId</b>: missing generated CV file."
+        Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+        return $false
+    }
+
+    $jobDir = Split-Path -Path $latestCvPath -Parent
+    if ([string]::IsNullOrWhiteSpace($jobDir) -or -not (Test-Path $jobDir)) {
+        $jobDir = Join-Path $workspaceRoot ("Generated_CVs/" + $JobId)
+        if (-not (Test-Path $jobDir)) {
+            New-Item -ItemType Directory -Path $jobDir -Force | Out-Null
+        }
+    }
+
+    $manualPdfPath = Join-Path $jobDir 'Rene_Dvash.pdf'
+    Copy-Item -Path $latestCvPath -Destination $manualPdfPath -Force
+
+    $jobUrl = if ($row.job_url) { "$($row.job_url)" } else { '' }
+    $caption = "Manual apply package for Job ID: $JobId`nFile: Rene_Dvash.pdf"
+    Send-TelegramDocumentDeterministic -BotToken $BotToken -ChatId $ChatId -FilePath $manualPdfPath -Caption $caption -MaxRetries 3 -RetryDelaySeconds 2 | Out-Null
+
+    $jobUrlEsc = [System.Security.SecurityElement]::Escape($jobUrl)
+    $followup = if ([string]::IsNullOrWhiteSpace($jobUrl)) {
+        "&#128230; Manual apply package is ready for <b>$JobId</b>.`nUse the attached <code>Rene_Dvash.pdf</code> for your manual submission."
+    } else {
+        "&#128230; Manual apply package is ready for <b>$JobId</b>.`nJob link: <code>$jobUrlEsc</code>`nUse the attached <code>Rene_Dvash.pdf</code> for your manual submission."
+    }
+    Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $followup -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+
+    Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'Approved_For_Apply' -Reason 'Manual apply package sent to Telegram' -FieldUpdates @{ submitted_cv_path = $manualPdfPath; last_error = '' }
+    Write-DispatchLog -JobId $JobId -Status 'Approved_For_Apply' -Reason 'manual_apply_package_sent'
+    return $true
+}
+
 function Get-AllowedEmojiForStatus {
     param([Parameter(Mandatory=$true)][string]$Status)
 
     switch ($Status) {
         'Sent' { return @('thumbs_up') }
         'CV_Revision_Requested' { return @('thumbs_up') }
-        'CV_Ready_For_Review' { return @('rocket') }
-        'Approved_For_Apply' { return @('rocket') }
+        'CV_Ready_For_Review' { return @('rocket', 'heart', 'fire') }
+        'Approved_For_Apply' { return @('rocket', 'heart', 'fire') }
         default { return @() }
     }
 }
@@ -438,6 +548,8 @@ function Convert-EmojiKeyToHtml {
     switch ($EmojiKey) {
         'thumbs_up' { return '&#128077;' }
         'rocket' { return '&#128640;' }
+        'heart' { return '&#10084;&#65039;' }
+        'fire' { return '&#128293;' }
         default { return '&#10067;' }
     }
 }
@@ -482,9 +594,9 @@ function Send-InvalidReactionGuidance {
         'Found' { 'Please wait for the bot notification message first.' }
         'Sent' { 'Use &#128077; to generate a CV draft.' }
         'CV_Generating' { 'CV generation is already running. Please wait for the draft PDF.' }
-        'CV_Ready_For_Review' { 'Review the draft, then use &#128640; to continue apply flow.' }
+        'CV_Ready_For_Review' { 'Review the draft, then use &#128640; / &#10084;&#65039; / &#128293; to continue apply flow.' }
         'CV_Revision_Requested' { 'Use &#128077; to generate the revised CV draft.' }
-        'Approved_For_Apply' { 'Use &#128640; to continue apply flow.' }
+        'Approved_For_Apply' { 'Use &#128640; / &#10084;&#65039; / &#128293; to continue apply flow.' }
         'Apply_Failed' { 'This job is in Apply_Failed. Re-send the job via process pipeline before reacting again.' }
         'Rejected_By_User' { 'This job was rejected. Re-send it via process pipeline if you want to reopen it.' }
         'Applied' { 'This job is already applied. No further reaction is needed.' }
@@ -541,6 +653,64 @@ function Get-OpenTaskStatusesMessage {
     if ($openRows.Count -gt $maxLines) {
         $remaining = $openRows.Count - $maxLines
         $lines += "... and $remaining more"
+    }
+
+    return ($lines -join "`n")
+}
+
+function Get-CompactJobsMessage {
+    param(
+        [Parameter(Mandatory=$true)][string]$TrackerPath,
+        [int]$MaxRows = 15
+    )
+
+    $rows = Get-TrackerRows -TrackerPath $TrackerPath
+    if (-not $rows -or @($rows).Count -eq 0) {
+        return "&#8505;&#65039; No jobs in tracker yet."
+    }
+
+    $sorted = @(
+        $rows | Sort-Object @{ Expression = {
+            try { [datetime]::Parse("$($_.updated_at)") } catch { [datetime]::MinValue }
+        }; Descending = $true }
+    )
+
+    $selected = @($sorted | Select-Object -First $MaxRows)
+
+    $shortStatusMap = @{
+        'Found' = 'Found'
+        'Sent' = 'Sent'
+        'CV_Generating' = 'CV_Gen'
+        'CV_Ready_For_Review' = 'CV_Ready'
+        'CV_Revision_Requested' = 'CV_Rev'
+        'Approved_For_Apply' = 'Approved'
+        'Applied' = 'Applied'
+        'Apply_Failed' = 'Failed'
+        'Rejected_By_User' = 'Rejected'
+    }
+
+    $lines = @()
+    $lines += "&#128203; <b>Jobs summary</b> (showing $($selected.Count)/$($rows.Count))"
+    foreach ($r in $selected) {
+        $jobId = [System.Security.SecurityElement]::Escape("$($r.job_id)")
+        $statusRaw = "$($r.status)"
+        $statusShort = if ($shortStatusMap.ContainsKey($statusRaw)) { $shortStatusMap[$statusRaw] } else { $statusRaw }
+        $statusEsc = [System.Security.SecurityElement]::Escape($statusShort)
+
+        $company = if ($r.company) { "$($r.company)" } else { 'Unknown' }
+        $title = if ($r.title) { "$($r.title)" } else { 'Unknown role' }
+        $roleText = "$company - $title"
+        if ($roleText.Length -gt 58) {
+            $roleText = $roleText.Substring(0, 55) + '...'
+        }
+        $roleEsc = [System.Security.SecurityElement]::Escape($roleText)
+
+        $lines += "<code>$jobId</code> | <b>$statusEsc</b> | $roleEsc"
+    }
+
+    if ($rows.Count -gt $MaxRows) {
+        $remaining = $rows.Count - $MaxRows
+        $lines += "... and $remaining more rows"
     }
 
     return ($lines -join "`n")
@@ -1660,6 +1830,28 @@ while ($true) {
                     if ($currentStatus -eq 'Sent' -or $currentStatus -eq 'CV_Revision_Requested') {
                         Write-Host "Thumbs-up reaction mapped to job_id=$jobId (message_id=$messageId)."
                         Start-CvGenerationForJob -JobId $jobId -BotToken $botToken -ChatId $ChatId -SuppressInvalidStatusMessage
+                    } elseif ($currentStatus -eq 'CV_Generating') {
+                        $shouldRetryStaleGeneration = $false
+                        $updatedAtText = "$($row.updated_at)"
+                        try {
+                            $updatedAt = [datetime]::Parse($updatedAtText)
+                            $ageMinutes = (New-TimeSpan -Start $updatedAt -End (Get-Date)).TotalMinutes
+                            if ($ageMinutes -ge $cvGeneratingRetryAfterMinutes) {
+                                $shouldRetryStaleGeneration = $true
+                            }
+                        } catch {}
+
+                        if ($shouldRetryStaleGeneration) {
+                            Write-Host "Detected stale CV_Generating state for job_id=$jobId (>=${cvGeneratingRetryAfterMinutes}m). Re-queueing worker."
+                            try {
+                                Set-JobStatus -TrackerPath $trackerPath -JobId $jobId -NewStatus 'CV_Revision_Requested' -Reason 'Auto-retry after stale CV_Generating timeout' -FieldUpdates @{ last_error = 'Auto-retry triggered after stale CV_Generating state' }
+                            } catch {
+                                Write-Host "Failed to mark stale generation recovery for job_id=${jobId}: $_"
+                            }
+                            Start-CvGenerationForJob -JobId $jobId -BotToken $botToken -ChatId $ChatId -SuppressInvalidStatusMessage
+                        } else {
+                            Write-Host "Thumbs-up not valid for job_id=$jobId in status=$currentStatus (still within retry window)."
+                        }
                     } else {
                         Write-Host "Thumbs-up not valid for job_id=$jobId in status=$currentStatus."
                         $noticeType = 'invalid_thumbs_up'
@@ -1676,20 +1868,31 @@ while ($true) {
                             } catch {}
                         }
                     }
-                } elseif ($emojiSet -contains $rocketEmoji) {
-                    # Apply-by-reaction flow is not fully implemented yet; provide status-aware guidance only.
-                    $noticeType = 'invalid_rocket'
-                    if (Has-InvalidNoticeBeenSent -JobId $jobId -NoticeType $noticeType) {
-                        Write-Host "Skipped duplicate invalid notice for job_id=$jobId type=$noticeType."
-                        continue
-                    }
-                    if (
-                        (Should-SendInvalidReactionNotice -JobId $jobId -Status $currentStatus -EmojiKey 'rocket' -CooldownSeconds $invalidReactionCooldownSeconds)
-                    ) {
+                } elseif (($emojiSet -contains $rocketEmoji) -or ($emojiSet -contains $heartEmoji) -or ($emojiSet -contains $fireEmoji)) {
+                    $approvalEmojiKey = if ($emojiSet -contains $heartEmoji) { 'heart' } elseif ($emojiSet -contains $fireEmoji) { 'fire' } else { 'rocket' }
+                    if ($currentStatus -eq 'CV_Ready_For_Review' -or $currentStatus -eq 'Approved_For_Apply') {
                         try {
-                            Send-InvalidReactionGuidance -JobId $jobId -CurrentStatus $currentStatus -EmojiKey 'rocket' -BotToken $botToken -ChatId $ChatId
-                            Register-InvalidNoticeSent -JobId $jobId -NoticeType $noticeType
-                        } catch {}
+                            $ok = Send-ManualApplyPackageForJob -JobId $jobId -BotToken $botToken -ChatId $ChatId
+                            if (-not $ok) {
+                                Write-Host "Approval-reaction flow failed for job_id=$jobId."
+                            }
+                        } catch {
+                            Write-Host "Approval-reaction flow error for job_id=${jobId}: $_"
+                        }
+                    } else {
+                        $noticeType = 'invalid_approval_reaction'
+                        if (Has-InvalidNoticeBeenSent -JobId $jobId -NoticeType $noticeType) {
+                            Write-Host "Skipped duplicate invalid notice for job_id=$jobId type=$noticeType."
+                            continue
+                        }
+                        if (
+                            (Should-SendInvalidReactionNotice -JobId $jobId -Status $currentStatus -EmojiKey $approvalEmojiKey -CooldownSeconds $invalidReactionCooldownSeconds)
+                        ) {
+                            try {
+                                Send-InvalidReactionGuidance -JobId $jobId -CurrentStatus $currentStatus -EmojiKey $approvalEmojiKey -BotToken $botToken -ChatId $ChatId
+                                Register-InvalidNoticeSent -JobId $jobId -NoticeType $noticeType
+                            } catch {}
+                        }
                     }
                 }
             }
@@ -2079,6 +2282,16 @@ while ($true) {
                             Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
                         } catch {
                             Write-Host "Failed to send /open_tasks response: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/jobs' -or $text -like '/jobs@*') {
+                        try {
+                            $msg = Get-CompactJobsMessage -TrackerPath $trackerPath -MaxRows 15
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to send /jobs response: $_"
                         }
                         continue
                     }

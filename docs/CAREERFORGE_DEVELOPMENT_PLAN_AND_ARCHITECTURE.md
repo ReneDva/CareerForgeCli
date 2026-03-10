@@ -12,6 +12,10 @@ _Last updated: 2026-03-10_
 - מנגנון מזהי משרה פנימי עודכן למזהים רציפים `job-XXXXXX` עבור משרות חדשות.
 - בוצע איפוס מבוקר של הטראקר להשארת רשומת עוגן אחת בלבד (corephotonics) והוסרו ארטיפקטים ישנים של בדיקות.
 - נוספו סקריפטי תפעול לריסטארט/עצירה/הפעלה וניטור לוגים רציף, להפחתת תקלות multi-consumer ב-Telegram polling.
+- תועד וטופל כשל Worker אסינכרוני ב-Generation:
+  - תוקן quoting של ארגומנטים להפעלת `telegram_cv_generation_worker.ps1` כדי למנוע PowerShell parse errors בכותרות עם רווחים (למשל `Full Stack ...`).
+  - נוספו לוגים פר-משרה ל-worker (`telegram_cv_worker_<job_id>.log/.err.log`) + בדיקת immediate-exit שמעדכנת `Apply_Failed` במקום להיתקע על `CV_Generating`.
+  - רוכך אימות Education ב-runtime ל-core facts בלבד (degree/program, institution, years), במקום נעילת שורות מלאה שגרמה ל-false failures.
 
 מסמך זה מיועד לשימוש פיתוח שוטף (Assistant + User) ולתיעוד מוצרי/טכני של המערכת.
 
@@ -114,6 +118,7 @@ _Last updated: 2026-03-10_
 - לשמור לוג dispatch לקובץ `memory/telegram_dispatch.log` עבור audit.
 - לשמור מיפוי `telegram_message_id -> job_id` בקובץ `memory/telegram_message_map.csv`.
 - להוסיף מאזין `getUpdates` לריאקציות 👍 שמפעיל אוטומטית יצירת CV ושולח PDF חזרה למשתמש.
+- להוסיף תגובות אישור מרובות לשלב האישור: `🚀` / `❤️` / `🔥` כולן תקינות לזרימת המשך והכנת חבילת הגשה ידנית.
 - להוסיף בדיקת זמינות Runtime/Agent לפני התחלת יצירת CV, עם הודעת שגיאה ברורה למשתמש במקרה שהריצה אינה זמינה.
 - להוסיף Preflight קשיח לפני יצירת CV:
   - קיום/קריאות של `profile.md`.
@@ -131,16 +136,28 @@ _Last updated: 2026-03-10_
 - בדיקת race-condition: שתי ריאקציות מהירות על משרות שונות אינן דורסות קלט job description.
 - בדיקת model wiring: בחירת מודל בצ'אט משנה בפועל את המודל שבו generation רץ.
 - בדיקת ריאקציה: לאחר הודעת משרה, תגובת 👍 צריכה להעביר סטטוס ל-`CV_Generating` ואז `CV_Ready_For_Review` עם שליחת PDF.
+- בדיקת ריאקציית אישור: תגובת `🚀` / `❤️` / `🔥` על הודעת ה-draft צריכה להכין `Rene_Dvash.pdf` ולשמור סטטוס `Approved_For_Apply`.
+- בדיקת התאוששות Worker: אם רשומת `job_id` נמחקת מהטראקר בזמן ריצת worker אסינכרונית, ה-worker מנסה לשחזר את הרשומה ממקור jobs/snapshot; במקרה כשל מתועד `last_error` ברור.
+- בדיקת worker-launch args: משרה עם כותרת הכוללת רווחים (לדוגמה `Full Stack Engineer`) אינה מפילה את ההפעלה, וה-worker נשאר רץ מעבר ל-health window.
+- בדיקת guardrails: במקרה שבו ניסוח סעיף Education משתנה אך core facts נשמרים, ה-generation אינו נכשל.
 
 #### בדיקת End-to-End מומלצת (ידנית)
 1. להריץ שליחת הודעות ניסיון: `powershell -NoProfile -File scripts/telegram_send_test_messages.ps1 -Count 3`
 2. להריץ מאזין תגובות: `powershell -NoProfile -File scripts/telegram_reaction_listener.ps1`
 3. לוודא ש-Runtime/Agent ליצירת CV פעיל בסביבה המקומית.
 4. להגיב 👍 להודעת משרה בטלגרם.
-5. לוודא:
+5. להגיב 🚀 או ❤️ או 🔥 לאחר review להודעת ה-draft.
+6. לוודא:
   - התקבל PDF review בטלגרם.
   - `job_tracker.csv` עודכן ל-`CV_Ready_For_Review`.
+  - התקבלה חבילת Apply ידנית (`Rene_Dvash.pdf` + לינק משרה) לאחר ריאקציית אישור.
   - נרשם dispatch log בקבצי `memory/telegram_dispatch.log` ו-`memory/telegram_message_map.csv`.
+
+#### Runbook יציבות תפעולית (ניקוי טראקר)
+- לפני עריכה ידנית/ניקוי של `job_tracker.csv`: לעצור מאזין (`scripts/stop_telegram_listener_background.ps1`).
+- לבצע cleanup/reset.
+- להפעיל מאזין מחדש רק לאחר אימות שהטראקר במצב הרצוי.
+- הסיבה: מניעת race שבו המאזין מאכלס מחדש רשומות בזמן ניקוי.
 
 #### Exit Criteria
 - שליחת ההודעות למשתמש מתבצעת בסדר עקבי ותבנית אחידה, עם לוג dispatch מלא.

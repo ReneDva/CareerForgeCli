@@ -287,6 +287,7 @@ function validatePersonalIntegrityOrThrow(
         }
         process.stderr.write(`[WARN] ${msg}\n`);
     }
+
 }
 
 function buildLockedLinksInstruction(lockedLinks: LockedLink[]): string {
@@ -429,13 +430,13 @@ export const generateApplicationAssets = async (
     IMMUTABLE PERSONAL DATA BLOCK (DO NOT ALTER VALUES):
     ${immutablePersonalBlock}
 
-    IMMUTABLE EDUCATION FACTS (DO NOT ALTER PROGRAM/INSTITUTION/YEARS/CAMPUS FACTS):
+    EDUCATION REFERENCE SECTION (PRESERVE CORE FACTS: degree/program, institution, and years):
     ${immutableEducationSection}
 
     EDIT SCOPE CONSTRAINTS:
-    - You may tailor ONLY professional content sections (summary, skills, experience, projects, education wording).
+    - You may tailor ONLY professional content sections (summary, skills, experience, projects).
     - You MUST keep identity and contact facts unchanged (name, phone, email, links).
-    - Do NOT change factual entities in education (program/degree names, institution names, years, campus/city in education lines).
+    - Preserve education core facts exactly (degree/program, institution, years), but wording compaction is allowed if facts remain unchanged.
     - Do NOT add new personal identifiers (city/residence/address, age, marital status, ID, nationality) unless explicitly present above.
     - Keep all link placeholders exactly unchanged (e.g. __LOCKED_LINK_1__).
 
@@ -444,7 +445,7 @@ export const generateApplicationAssets = async (
     - Technical Skills: max 5 grouped bullets.
     - Work Experience: max 2 roles, each role max 2 bullets, each bullet <= 20 words.
     - Projects: max 2 project bullets total.
-    - Education: preserve core facts, keep concise, max 1 supporting bullet per education entry.
+    - Education: keep immutable core facts; compact wording is allowed.
     - Keep total density suitable for exactly one A4 page.
 
     TRUTHFULNESS CONSTRAINTS:
@@ -505,12 +506,12 @@ CRITICAL CONSTRAINTS:
 ${lockedLinksInstruction}
 IMMUTABLE PERSONAL DATA BLOCK:
 ${immutablePersonalBlock}
-IMMUTABLE EDUCATION FACTS:
+EDUCATION REFERENCE SECTION (PRESERVE CORE FACTS: degree/program, institution, years):
 ${immutableEducationSection}
 - Keep the existing structure and formatting style unless a change is required for factual correctness or ATS relevance.
-- Refine ONLY professional sections (summary/skills/experience/projects/education wording).
+- Refine ONLY professional sections (summary/skills/experience/projects).
 - Preserve identity/contact values exactly; do not add city/address/residence unless explicitly present in source profile.
-- Do NOT change factual entities in education (program/degree names, institution names, years, campus/city in education lines).
+- Preserve education core facts exactly; wording can be compacted as long as facts remain unchanged.
 - Preserve existing links exactly when present and never replace a user-specific link with a generic home page.
 - Keep all link placeholders exactly unchanged (e.g. __LOCKED_LINK_1__).
 - Never add fabricated or exaggerated claims.
@@ -573,7 +574,7 @@ CRITICAL CONSTRAINTS:
 ${lockedLinksInstruction}
 IMMUTABLE PERSONAL DATA BLOCK:
 ${immutablePersonalBlock}
-IMMUTABLE EDUCATION FACTS:
+EDUCATION REFERENCE SECTION (PRESERVE CORE FACTS: degree/program, institution, years):
 ${immutableEducationSection}
 - Keep all immutable facts unchanged.
 - Do not add city/residence/address unless explicitly present in source profile.
@@ -583,7 +584,7 @@ ${immutableEducationSection}
     - Summary max 2 bullets.
     - Experience max 2 bullets per role.
     - Projects max 2 bullets total.
-    - Education core facts must remain but narrative text should be minimal.
+    - Preserve education core facts exactly; wording compaction is allowed.
 - Output ONLY valid raw HTML.`;
 
     return await withRetry(async () => {

@@ -71,7 +71,7 @@ function Format-TelegramJobMessage {
     $locationEsc = [System.Security.SecurityElement]::Escape($location)
     $urlEsc = [System.Security.SecurityElement]::Escape($url)
 
-    return "&#127970; <b>Company</b>: $companyEsc`n&#128188; <b>Title</b>: $titleEsc`n&#128205; <b>Location</b>: $locationEsc`n&#128279; <b>Link</b>: $urlEsc`n`n<i>React with &#128077; to generate CV | React with &#128640; to Generate &amp; Apply</i>"
+    return "&#127970; <b>Company</b>: $companyEsc`n&#128188; <b>Title</b>: $titleEsc`n&#128205; <b>Location</b>: $locationEsc`n&#128279; <b>Link</b>: $urlEsc`n`n<i>React with &#128077; to generate CV | React with &#128640; / &#10084;&#65039; / &#128293; to approve &amp; prepare apply package</i>"
 }
 
 function Ensure-MessageMapFile {

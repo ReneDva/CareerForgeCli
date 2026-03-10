@@ -2,7 +2,11 @@ param(
     [Parameter(Mandatory=$true)][string]$JobId,
     [Parameter(Mandatory=$true)][string]$BotToken,
     [Parameter(Mandatory=$true)][string]$ChatId,
-    [string]$ModelId = ''
+    [string]$ModelId = '',
+    [string]$JobTitle = '',
+    [string]$JobCompany = '',
+    [string]$JobLocation = '',
+    [string]$JobUrl = ''
 )
 
 . "$PSScriptRoot\job_state_machine.ps1"
@@ -172,11 +176,51 @@ function Assert-CvGenerationPreflight {
     }
 }
 
-$rows = Get-TrackerRows -TrackerPath $trackerPath
-$row = $rows | Where-Object { "$($_.job_id)" -eq "$JobId" } | Select-Object -First 1
+function Ensure-TrackerRowForJob {
+    param([Parameter(Mandatory=$true)][string]$TargetJobId)
+
+    $rows = Get-TrackerRows -TrackerPath $trackerPath
+    $existing = $rows | Where-Object { "$($_.job_id)" -eq "$TargetJobId" } | Select-Object -First 1
+    if ($existing) {
+        return $existing
+    }
+
+    $fallbackJob = Get-JobById -TargetJobId $TargetJobId
+    if (-not $fallbackJob) {
+        $fallbackJob = [PSCustomObject]@{
+            id = $TargetJobId
+            title = "$JobTitle"
+            company = "$JobCompany"
+            location = "$JobLocation"
+            job_url = "$JobUrl"
+        }
+    }
+
+    try {
+        Add-FoundJobIfMissing -TrackerPath $trackerPath -Job $fallbackJob -Source 'telegram_cv_worker_recovery' | Out-Null
+    } catch {}
+
+    $rows = Get-TrackerRows -TrackerPath $trackerPath
+    $recovered = $rows | Where-Object { "$($_.job_id)" -eq "$TargetJobId" } | Select-Object -First 1
+    if (-not $recovered) {
+        return $null
+    }
+
+    try {
+        Set-JobStatus -TrackerPath $trackerPath -JobId $TargetJobId -NewStatus 'Sent' -Reason 'Recovered tracker row for async CV generation worker'
+    } catch {}
+    try {
+        Set-JobStatus -TrackerPath $trackerPath -JobId $TargetJobId -NewStatus 'CV_Generating' -Reason 'Recovered async CV generation after tracker reset'
+    } catch {}
+
+    $rows = Get-TrackerRows -TrackerPath $trackerPath
+    return $rows | Where-Object { "$($_.job_id)" -eq "$TargetJobId" } | Select-Object -First 1
+}
+
+$row = Ensure-TrackerRowForJob -TargetJobId $JobId
 if (-not $row) {
     try {
-        $msg = "&#9888;&#65039; Could not start CV generation for <b>$JobId</b>: job not found in tracker."
+        $msg = "&#9888;&#65039; Could not start CV generation for <b>$JobId</b>: job not found in tracker (or recovery failed)."
         Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
     } catch {}
     exit 1
@@ -227,14 +271,25 @@ $pushed = $false
 try {
     Push-Location $workspaceRoot
     $pushed = $true
-    & node "$cliPath" generate --profile "$profilePath" --job "$jobDescPath" --out "$cvPath" --theme modern --model "$generationModel"
+    $generateOutput = & node "$cliPath" generate --profile "$profilePath" --job "$jobDescPath" --out "$cvPath" --theme modern --model "$generationModel" 2>&1
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0 -or -not (Test-Path $cvPath)) {
-        throw "CV generation command failed (exit=$exitCode)."
+        $outputText = ''
+        try {
+            $outputText = (($generateOutput | ForEach-Object { "$_" }) -join "`n")
+        } catch {
+            $outputText = ''
+        }
+
+        if ([string]::IsNullOrWhiteSpace($outputText)) {
+            throw "CV generation command failed (exit=$exitCode)."
+        }
+
+        throw "CV generation command failed (exit=$exitCode). Output: $outputText"
     }
 
-    $caption = "CV draft generated for Job ID: $JobId`nPlease review manually.`nReact with $rocketEmoji only after approval."
+    $caption = "CV draft generated for Job ID: $JobId`nPlease review manually.`nReact with 🚀 / ❤️ / 🔥 after approval."
     Send-TelegramDocumentDeterministic -BotToken $BotToken -ChatId $ChatId -FilePath $cvPath -Caption $caption -MaxRetries 3 -RetryDelaySeconds 2 | Out-Null
 
     Set-JobStatus -TrackerPath $trackerPath -JobId $JobId -NewStatus 'CV_Ready_For_Review' -Reason 'Draft CV sent to Telegram for manual review' -FieldUpdates @{ latest_cv_path = $cvPath; last_error = '' }

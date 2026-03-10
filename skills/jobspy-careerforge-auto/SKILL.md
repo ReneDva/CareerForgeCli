@@ -36,7 +36,7 @@ Configure a recurring background task:
 📍 **Location**: <location>
 🔗 **Link**: <job_url>
 
-*React with 👍 to generate CV | React with 🚀 to Generate & Apply*
+*React with 👍 to generate CV | React with 🚀 / ❤️ / 🔥 to approve & prepare apply package*
 
 ```
 
@@ -63,11 +63,11 @@ node dist/cli.js generate --profile profile.md --job temp/<job_id>/job_desc.txt 
 	- If chat model was selected via `/models` or `/model`, generation must use that selected model.
 
 4. **Action (Review)**: Upload the generated draft PDF to the Telegram chat.
-4. **Message**: "✅ כאן קורות החיים המותאמים שיצרתי עבור **<company>**. המערכת תגיש אותם תחת השם **Rene_Dvash.pdf**. האם לאשר הגשה אוטומטית? (הגיבי 'אשר' או לחצי 🚀)"
+4. **Message**: "✅ כאן קורות החיים המותאמים שיצרתי עבור **<company>**. המערכת תכין חבילת הגשה ידנית תחת השם **Rene_Dvash.pdf**. האם לאשר המשך? (הגיבי 'אשר' או לחצי 🚀 / ❤️ / 🔥)"
 5. **Hard Stop**: Wait for explicit user confirmation.
 6. **Cleanup**: Delete the job-scoped temp description file immediately after generation.
 
-## 3. Step B: Human-like Application (Reaction: 🚀 or Approval)
+## 3. Step B: Human-like Application (Reaction: 🚀 / ❤️ / 🔥 or Approval)
 
 When approval is received:
 

@@ -4,6 +4,7 @@ _Last updated: 2026-03-10_
 
 ## Current Snapshot (2026-03-10)
 
+- Approval reactions are now multi-emoji in CLI flow: `🚀` / `❤️` / `🔥` all trigger manual-apply package preparation from `CV_Ready_For_Review` / `Approved_For_Apply`.
 - `/search_cli` runtime parser failure was fixed in `process_jobs.ps1` (PowerShell variable interpolation with colon).
 - `/log` command is now fully implemented in `scripts/telegram_reaction_listener.ps1` and returns recent listener stdout/stderr + dispatch logs.
 - Search dispatch path now uses stronger dedupe:
@@ -18,6 +19,16 @@ _Last updated: 2026-03-10_
 - Added cleanup/reset helper:
    - `scripts/reset_tracker_keep_corephotonics.ps1`
    - supports preserving one canonical row and cleaning generated test artifacts.
+- Async CV worker now includes tracker-row recovery logic: if a row disappears (e.g., tracker reset while worker runs), the worker attempts to reconstruct the row from jobs files/snapshot args before failing.
+- Operational guardrail added: stop listener before manual tracker cleanup/reset to avoid row re-population races.
+- Incident hardening (2026-03-10, PM):
+   - Fixed async worker launch argument quoting in `scripts/telegram_reaction_listener.ps1` to avoid PowerShell positional-argument parsing failures on job titles with spaces (e.g., "Full Stack ..." -> `Stack` parse error).
+   - Added per-job async worker logs:
+      - `memory/telegram_cv_worker_<job_id>.log`
+      - `memory/telegram_cv_worker_<job_id>.err.log`
+   - Added worker immediate-exit health check (2s) after spawn; if worker exits early, transition to `Apply_Failed` with explicit `last_error` path.
+   - Extended `/log` output to include latest worker stdout/stderr tails for fast diagnosis.
+   - Relaxed CV education guardrail enforcement in generation runtime to immutable core facts only (degree/program, institution, years), preventing false failures from wording compaction.
 
 ## 1) Goal
 
@@ -211,12 +222,17 @@ Controller returns:
    - `/open_tasks`
    - `/paths`
 5. React 👍 to mapped job message.
-6. Verify:
+6. React 🚀 or ❤️ or 🔥 to the generated draft message after review.
+7. Verify:
    - status progression to `CV_Ready_For_Review`
    - PDF returned to Telegram
+   - approval reaction moves flow to manual apply package preparation (`Rene_Dvash.pdf` + job link)
    - logs and map files updated
    - strict validation blocks changed factual entities (education/institution/years, injected residence/city), but does not fail on legitimate professional bullet rewriting.
    - strict one-page mode retries compaction first and fails only if final rendered output still exceeds one A4 page.
+   - if tracker row is removed mid-run, worker recovery path either restores row and completes, or fails with explicit recovery error in `last_error`.
+   - job titles containing spaces/punctuation no longer crash worker launch argument parsing.
+   - `/log` includes worker logs and displays generation failure reason without opening files manually.
 
 ## Runtime prerequisite note
 - CV generation success depends on active generation runtime/agent context.
@@ -233,6 +249,7 @@ Controller returns:
 - Backlog noise on restart -> stale window + offset persistence.
 - Overload spam -> one notification per context + fallback once.
 - State drift -> centralize transitions in FSM only.
+- Tracker reset race with async workers -> enforce stop-listener-before-cleanup runbook + worker row recovery fallback.
 
 ## 8) First Execution Slice (immediately after snapshot push)
 
