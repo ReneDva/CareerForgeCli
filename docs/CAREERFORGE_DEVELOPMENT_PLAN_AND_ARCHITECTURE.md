@@ -418,3 +418,34 @@ _Last updated: 2026-03-06_
 - `docs/ROADMAP.md`
 - `docs/TEST_PLAN.md`
 - `docs/OPERATIONS.md`
+
+---
+
+## 9) מצב נוכחי (Snapshot) — 2026-03-10
+
+- הושלמה הקשחת Telegram command registration עם merge בטוח + גיבוי אוטומטי לפני עדכון.
+- נוספה שליטה בקונפיג (`project.config.example.json`) על תפריט הפקודות הגלויות.
+- נוספו פקודות חיפוש דו-מסלוליות: `search_agent` ו-`search_cli`.
+- `/search_config` + `/search_set` קיבלו editor אינטראקטיבי עם pending-edit state פר-צ'אט.
+- זרימת CLI (`process_jobs.ps1`) שולחת דיווח פר-משרה גם במקרי דילוג/כשל (עם reason code).
+- נוסף סקריפט תפעולי: `scripts/sync_and_verify_telegram_commands.ps1` לסנכרון ובדיקת scopes.
+
+## 10) תכנון והתחלת מימוש — Mode Switch (Agent <-> CLI)
+
+### מטרה
+לתת למשתמשת מעבר ברור בין מצב חיפוש מבוסס סוכן לבין מצב CLI אוטומטי, בלי בלבול בפקודות alias.
+
+### מה הוטמע
+- נוספה הגדרת `runtimeMode` תחת `careerforge.telegram` (`cli`/`agent`).
+- נוספו פקודות:
+  - `/mode_status`
+  - `/mode_cli`
+  - `/mode_agent`
+- לוגיקת alias עבור `/search` ו-`/search_start` הפכה תלויה במצב:
+  - `cli` => ריצת CLI מלאה.
+  - `agent` => הכוונה לזרימת agent.
+
+### צעדי המשך
+1. לייצב תפעול single-consumer בטלגרם (להימנע מ-409 בין pollers).
+2. להוסיף runbook קצר להחלפת מצב תפעולית (כולל stop/start listener policy).
+3. לבצע smoke test דו-מצבי ולתעד תוצאות ב-`docs/OPENCLAW_TELEGRAM_INTEGRATION_PLAN.md`.

@@ -49,6 +49,7 @@
     },
     "telegram": {
       "listenerMode": "polling",
+      "runtimeMode": "cli",
       "allowedUpdates": [
         "message",
         "callback_query",
@@ -67,6 +68,9 @@
           "paths",
           "search_agent",
           "search_cli",
+          "mode_status",
+          "mode_cli",
+          "mode_agent",
           "search",
           "search_start",
           "search_timer",

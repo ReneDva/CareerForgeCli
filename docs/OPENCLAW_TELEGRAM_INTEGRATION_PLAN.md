@@ -281,3 +281,34 @@ This plan is intentionally execution-oriented and mapped to current repository s
   1. להשבית את הפקודות מה-menu merge.
   2. להשאיר `search` ידני בלבד.
   3. להשתמש ב-runbook טרמינלי (`job_search_wrapper.ps1` + `process_jobs.ps1`) עד תיקון.
+
+---
+
+## 10) Current Snapshot (2026-03-10)
+
+- Commands sync is now config-driven and safely merged (no blind overwrite).
+- Pre-change backups are written under `memory/telegram_command_backups/`.
+- Dual search commands are registered: `search_agent` and `search_cli`.
+- Interactive search config editor is available (`/search_config`, `/search_set`, callbacks + pending state).
+- CLI pipeline now emits per-job outcome notifications (including skip reasons) during search processing.
+- Known runtime behavior: if multiple Telegram pollers run concurrently, one consumer may receive commands unexpectedly (`409 getUpdates conflict`).
+
+## 11) Agent/CLI Mode Switch Plan (in progress)
+
+### Objective
+Allow explicit operational switching between:
+- **CLI mode**: `/search` aliases run direct CLI automation (`job_search_wrapper.ps1` + `process_jobs.ps1`) with per-job notifications.
+- **Agent mode**: `/search` aliases route to agent-guided behavior messaging, with explicit `/search_agent` flow.
+
+### Implemented in code
+- Added `careerforge.telegram.runtimeMode` config (default: `cli`).
+- Added Telegram commands:
+   - `/mode_status`
+   - `/mode_cli`
+   - `/mode_agent`
+- Added alias routing logic:
+   - in `cli` mode, `/search` + `/search_start` execute CLI pipeline.
+   - in `agent` mode, `/search` + `/search_start` return agent-mode guidance and require `/search_agent`.
+
+### Remaining operational step
+- Stabilize single Telegram consumer during runtime (avoid concurrent OpenClaw poller + local listener).

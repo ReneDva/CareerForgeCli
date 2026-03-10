@@ -1236,6 +1236,77 @@ function Get-ProjectConfigObject {
     return $null
 }
 
+function Get-ProjectConfigLocalWritableObject {
+    if (Test-Path $projectConfigLocalPath) {
+        try {
+            $raw = Get-Content -Path $projectConfigLocalPath -Raw -Encoding UTF8
+            if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+                if ($parsed) {
+                    return $parsed
+                }
+            }
+        } catch {
+            Write-Host "project.config.local.json invalid, recreating: $_"
+        }
+    }
+
+    return [PSCustomObject]@{}
+}
+
+function Ensure-ConfigPath {
+    param(
+        [Parameter(Mandatory=$true)]$Root,
+        [Parameter(Mandatory=$true)][string[]]$Path
+    )
+
+    $cursor = $Root
+    foreach ($segment in $Path) {
+        if ($null -eq $cursor.PSObject.Properties[$segment]) {
+            $cursor | Add-Member -NotePropertyName $segment -NotePropertyValue ([PSCustomObject]@{}) -Force
+        }
+
+        $next = $cursor.$segment
+        if ($null -eq $next) {
+            $cursor | Add-Member -NotePropertyName $segment -NotePropertyValue ([PSCustomObject]@{}) -Force
+            $next = $cursor.$segment
+        }
+
+        $cursor = $next
+    }
+
+    return $cursor
+}
+
+function Set-SearchRuntimeModeInConfig {
+    param(
+        [Parameter(Mandatory=$true)][ValidateSet('cli', 'agent')][string]$Mode
+    )
+
+    $cfg = Get-ProjectConfigLocalWritableObject
+    $telegramNode = Ensure-ConfigPath -Root $cfg -Path @('careerforge', 'telegram')
+    $telegramNode | Add-Member -NotePropertyName runtimeMode -NotePropertyValue $Mode -Force
+
+    $json = $cfg | ConvertTo-Json -Depth 30
+    Set-Content -Path $projectConfigLocalPath -Value $json -Encoding UTF8
+}
+
+function Get-SearchRuntimeMode {
+    $cfg = Get-ProjectConfigObject
+    $mode = $null
+    try {
+        if ($cfg -and $cfg.careerforge -and $cfg.careerforge.telegram -and $cfg.careerforge.telegram.runtimeMode) {
+            $mode = "$($cfg.careerforge.telegram.runtimeMode)".Trim().ToLowerInvariant()
+        }
+    } catch {}
+
+    if (@('cli', 'agent') -contains $mode) {
+        return $mode
+    }
+
+    return 'cli'
+}
+
 function Get-TelegramCommandMenuConfig {
     $defaults = [PSCustomObject]@{
         enabled = $true
@@ -1412,6 +1483,9 @@ try {
         @{ command = 'paths'; description = 'Show OpenClaw config/state/workspace paths' },
         @{ command = 'search_agent'; description = 'Agent-filtered search (AI mode)' },
         @{ command = 'search_cli'; description = 'Direct CLI search + per-job notifications' },
+        @{ command = 'mode_status'; description = 'Show active search runtime mode' },
+        @{ command = 'mode_cli'; description = 'Set runtime mode to direct CLI automation' },
+        @{ command = 'mode_agent'; description = 'Set runtime mode to agent-filtered behavior' },
         @{ command = 'search'; description = 'Alias: direct CLI search' },
         @{ command = 'search_start'; description = 'Alias: direct CLI search' },
         @{ command = 'search_timer'; description = 'Set auto search interval (e.g. 6h/2d)' },
@@ -1766,6 +1840,40 @@ while ($true) {
                         continue
                     }
 
+                    if ($text -eq '/mode_status' -or $text -like '/mode_status@*') {
+                        try {
+                            $mode = Get-SearchRuntimeMode
+                            $modeEsc = [System.Security.SecurityElement]::Escape($mode)
+                            $msg = "&#9881;&#65039; <b>Search runtime mode</b>: <code>$modeEsc</code>`nUse <code>/mode_cli</code> or <code>/mode_agent</code> to switch."
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /mode_status command: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/mode_cli' -or $text -like '/mode_cli@*') {
+                        try {
+                            Set-SearchRuntimeModeInConfig -Mode 'cli'
+                            $msg = '&#9989; Runtime mode switched to <b>cli</b>. Aliases <code>/search</code> and <code>/search_start</code> now run direct CLI automation.'
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /mode_cli command: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/mode_agent' -or $text -like '/mode_agent@*') {
+                        try {
+                            Set-SearchRuntimeModeInConfig -Mode 'agent'
+                            $msg = '&#9989; Runtime mode switched to <b>agent</b>. Aliases <code>/search</code> and <code>/search_start</code> now point to agent-guided behavior.'
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /mode_agent command: $_"
+                        }
+                        continue
+                    }
+
                     if ($text -eq '/search_agent' -or $text -like '/search_agent@*') {
                         try {
                             $msg = "&#129302; <b>Agent-filtered mode</b>`nThis mode is handled by your OpenClaw agent runtime and may return AI summaries.`nUse <code>/search_cli</code> for direct CLI automation with per-job notifications."
@@ -1776,7 +1884,7 @@ while ($true) {
                         continue
                     }
 
-                    if ($text -eq '/search_cli' -or $text -like '/search_cli@*' -or $text -eq '/search' -or $text -like '/search@*' -or $text -eq '/search_start' -or $text -like '/search_start@*') {
+                    if ($text -eq '/search_cli' -or $text -like '/search_cli@*') {
                         try {
                             $result = Invoke-SearchPipeline -Trigger 'manual_cli_command' -BotToken $botToken -ChatId $ChatId
                             $safe = [System.Security.SecurityElement]::Escape($result.message)
@@ -1785,6 +1893,30 @@ while ($true) {
                             Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
                         } catch {
                             Write-Host "Failed to handle /search_cli command: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/search' -or $text -like '/search@*' -or $text -eq '/search_start' -or $text -like '/search_start@*') {
+                        $mode = Get-SearchRuntimeMode
+                        if ($mode -eq 'agent') {
+                            try {
+                                $msg = "&#129302; <b>Agent mode is active</b>.`nUse <code>/search_agent</code> for agent-filtered behavior, or switch mode with <code>/mode_cli</code> to run direct CLI automation from aliases."
+                                Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                            } catch {
+                                Write-Host "Failed to handle /search alias in agent mode: $_"
+                            }
+                            continue
+                        }
+
+                        try {
+                            $result = Invoke-SearchPipeline -Trigger 'manual_cli_alias' -BotToken $botToken -ChatId $ChatId
+                            $safe = [System.Security.SecurityElement]::Escape($result.message)
+                            $prefix = if ($result.ok) { '&#9989;' } else { '&#9888;&#65039;' }
+                            $msg = "$prefix <b>CLI search run result</b>`n<code>$safe</code>"
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /search alias command: $_"
                         }
                         continue
                     }
