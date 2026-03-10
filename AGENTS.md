@@ -52,6 +52,12 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 - `trash` > `rm` (recoverable beats gone forever)
 - When in doubt, ask.
 
+## Telegram Command Menu Safety
+
+- Never overwrite existing Telegram bot command menus blindly.
+- Always fetch and back up current command sets before any `setMyCommands` update.
+- Prefer additive merge by default; only do restrictive allowlist updates when explicitly configured.
+
 ## Immutable CV Template Lock
 
 - `profile.md` is a locked canonical template.

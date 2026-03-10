@@ -17,8 +17,17 @@ $jobsRawPath = Join-Path $workspaceRoot 'jobs.json'
 $offsetPath = Join-Path $workspaceRoot 'memory/telegram_update_offset.txt'
 $invalidNoticeLogPath = Join-Path $workspaceRoot 'memory/telegram_invalid_notice_log.csv'
 $modelStatePath = Join-Path $workspaceRoot 'memory/telegram_model_state.json'
+$searchSchedulerStatePath = Join-Path $workspaceRoot 'memory/telegram_search_scheduler.json'
+$searchPendingEditStatePath = Join-Path $workspaceRoot 'memory/telegram_search_pending_edit_state.json'
+$projectConfigLocalPath = Join-Path $workspaceRoot 'project.config.local.json'
+$projectConfigExamplePath = Join-Path $workspaceRoot 'project.config.example.json'
+$telegramCommandsBackupDir = Join-Path $workspaceRoot 'memory/telegram_command_backups'
+$searchConfigPath = Join-Path $workspaceRoot 'search_config.json'
+$searchWrapperScriptPath = Join-Path $workspaceRoot 'job_search_wrapper.ps1'
+$processJobsScriptPath = Join-Path $workspaceRoot 'process_jobs.ps1'
 $invalidReactionCooldownSeconds = 120
 $script:InvalidReactionNoticeCache = @{}
+$script:SearchRunInProgress = $false
 
 Initialize-JobTracker -TrackerPath $trackerPath
 
@@ -671,6 +680,704 @@ function Resolve-ModelInput {
     }
 }
 
+function Ensure-SearchSchedulerStateFile {
+    if (-not (Test-Path $searchSchedulerStatePath)) {
+        $seed = [PSCustomObject]@{
+            enabled = $false
+            interval_seconds = 0
+            next_run_utc = $null
+            last_run_utc = $null
+            last_status = 'never'
+            last_error = ''
+        }
+        $seed | ConvertTo-Json -Depth 6 | Set-Content -Path $searchSchedulerStatePath -Encoding UTF8
+    }
+}
+
+function Get-SearchSchedulerState {
+    Ensure-SearchSchedulerStateFile
+    try {
+        $raw = Get-Content -Path $searchSchedulerStatePath -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            throw 'empty scheduler state file'
+        }
+
+        $state = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $state.enabled) { $state | Add-Member -NotePropertyName enabled -NotePropertyValue $false -Force }
+        if ($null -eq $state.interval_seconds) { $state | Add-Member -NotePropertyName interval_seconds -NotePropertyValue 0 -Force }
+        if ($null -eq $state.next_run_utc) { $state | Add-Member -NotePropertyName next_run_utc -NotePropertyValue $null -Force }
+        if ($null -eq $state.last_run_utc) { $state | Add-Member -NotePropertyName last_run_utc -NotePropertyValue $null -Force }
+        if ($null -eq $state.last_status) { $state | Add-Member -NotePropertyName last_status -NotePropertyValue 'unknown' -Force }
+        if ($null -eq $state.last_error) { $state | Add-Member -NotePropertyName last_error -NotePropertyValue '' -Force }
+        return $state
+    } catch {
+        $fallback = [PSCustomObject]@{
+            enabled = $false
+            interval_seconds = 0
+            next_run_utc = $null
+            last_run_utc = $null
+            last_status = 'reset'
+            last_error = 'state_parse_error'
+        }
+        $fallback | ConvertTo-Json -Depth 6 | Set-Content -Path $searchSchedulerStatePath -Encoding UTF8
+        return $fallback
+    }
+}
+
+function Save-SearchSchedulerState {
+    param([Parameter(Mandatory=$true)]$State)
+    $State | ConvertTo-Json -Depth 8 | Set-Content -Path $searchSchedulerStatePath -Encoding UTF8
+}
+
+function Parse-SearchTimerIntervalSeconds {
+    param([Parameter(Mandatory=$true)][string]$InputText)
+
+    $value = "$InputText".Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw 'Timer value is empty. Use formats like 6h or 2d.'
+    }
+
+    if ($value -match '^(?<n>\d+)\s*(?<u>[hd])$') {
+        $n = [int]$matches['n']
+        $u = "$($matches['u'])"
+        if ($n -le 0) {
+            throw 'Timer value must be positive.'
+        }
+        switch ($u) {
+            'h' { return ($n * 3600) }
+            'd' { return ($n * 86400) }
+        }
+    }
+
+    throw "Unsupported timer format '$InputText'. Use 6h or 2d."
+}
+
+function Ensure-SearchConfigFile {
+    if (-not (Test-Path $searchConfigPath)) {
+        throw "search_config.json not found at '$searchConfigPath'"
+    }
+}
+
+function Get-SearchConfigObject {
+    Ensure-SearchConfigFile
+    return (Get-Content -Path $searchConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+}
+
+function Save-SearchConfigObject {
+    param([Parameter(Mandatory=$true)]$Config)
+    $Config | ConvertTo-Json -Depth 20 | Set-Content -Path $searchConfigPath -Encoding UTF8
+}
+
+function Ensure-SearchPendingEditStateFile {
+    if (-not (Test-Path $searchPendingEditStatePath)) {
+        $seed = @{ by_chat = @{} } | ConvertTo-Json -Depth 8
+        Set-Content -Path $searchPendingEditStatePath -Value $seed -Encoding UTF8
+    }
+}
+
+function Get-SearchPendingEditState {
+    Ensure-SearchPendingEditStateFile
+    try {
+        $raw = Get-Content -Path $searchPendingEditStatePath -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return @{ by_chat = @{} }
+        }
+
+        $state = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $state.by_chat) {
+            $state | Add-Member -NotePropertyName by_chat -NotePropertyValue @{} -Force
+        }
+        return $state
+    } catch {
+        return @{ by_chat = @{} }
+    }
+}
+
+function Save-SearchPendingEditState {
+    param([Parameter(Mandatory=$true)]$State)
+    $State | ConvertTo-Json -Depth 12 | Set-Content -Path $searchPendingEditStatePath -Encoding UTF8
+}
+
+function Get-SearchPendingEditForChat {
+    param([Parameter(Mandatory=$true)][string]$ChatId)
+
+    $state = Get-SearchPendingEditState
+    if ($state.by_chat) {
+        return $state.by_chat.$ChatId
+    }
+    return $null
+}
+
+function Set-SearchPendingEditForChat {
+    param(
+        [Parameter(Mandatory=$true)][string]$ChatId,
+        [Parameter(Mandatory=$true)][string]$Key,
+        [Parameter(Mandatory=$true)][string]$Mode
+    )
+
+    $validModes = @('replace', 'add', 'remove')
+    if ($validModes -notcontains $Mode) {
+        throw "Unsupported pending edit mode: $Mode"
+    }
+
+    $state = Get-SearchPendingEditState
+    if ($null -eq $state.by_chat) {
+        $state | Add-Member -NotePropertyName by_chat -NotePropertyValue @{} -Force
+    }
+
+    $state.by_chat | Add-Member -NotePropertyName $ChatId -NotePropertyValue ([PSCustomObject]@{
+        key = $Key
+        mode = $Mode
+        updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+    }) -Force
+
+    Save-SearchPendingEditState -State $state
+}
+
+function Clear-SearchPendingEditForChat {
+    param([Parameter(Mandatory=$true)][string]$ChatId)
+
+    $state = Get-SearchPendingEditState
+    if ($state.by_chat -and $state.by_chat.PSObject.Properties[$ChatId]) {
+        $state.by_chat.PSObject.Properties.Remove($ChatId)
+        Save-SearchPendingEditState -State $state
+    }
+}
+
+function Test-IsSearchArrayKey {
+    param([Parameter(Mandatory=$true)][string]$Key)
+    return @('queries', 'locations', 'allowedLocationKeywords', 'excludeTitleKeywords') -contains $Key
+}
+
+function Get-SearchConfigKeyCurrentValueText {
+    param(
+        [Parameter(Mandatory=$true)]$Config,
+        [Parameter(Mandatory=$true)][string]$Key
+    )
+
+    $v = $Config.$Key
+    if ($null -eq $v) {
+        return '<none>'
+    }
+
+    if (Test-IsSearchArrayKey -Key $Key) {
+        $arr = @($v)
+        if ($arr.Count -eq 0) {
+            return '<none>'
+        }
+        return ($arr -join ', ')
+    }
+
+    return "$v"
+}
+
+function Get-SearchEditModeKeyboardMarkup {
+    param([Parameter(Mandatory=$true)][string]$Key)
+
+    $rows = @()
+    $rows += ,@(@{ text = "Replace $Key"; callback_data = "cf_search_mode|$Key|replace" })
+    if (Test-IsSearchArrayKey -Key $Key) {
+        $rows += ,@(@{ text = "Add values to $Key"; callback_data = "cf_search_mode|$Key|add" })
+        $rows += ,@(@{ text = "Remove values from $Key"; callback_data = "cf_search_mode|$Key|remove" })
+    }
+    $rows += ,@(@{ text = 'Cancel edit'; callback_data = 'cf_search_edit_cancel' })
+    $rows += ,@(@{ text = 'Back to fields'; callback_data = 'cf_search_set_menu' })
+    return @{ inline_keyboard = $rows }
+}
+
+function Apply-SearchConfigEdit {
+    param(
+        [Parameter(Mandatory=$true)][string]$Key,
+        [Parameter(Mandatory=$true)][string]$Mode,
+        [Parameter(Mandatory=$true)][string]$RawValue
+    )
+
+    $cfg = Get-SearchConfigObject
+    $valueText = "$RawValue".Trim()
+
+    if ([string]::IsNullOrWhiteSpace($valueText)) {
+        throw 'Value cannot be empty.'
+    }
+
+    if ($Mode -eq 'replace') {
+        Set-SearchConfigValue -Key $Key -RawValue $valueText | Out-Null
+        return Get-SearchConfigObject
+    }
+
+    if (-not (Test-IsSearchArrayKey -Key $Key)) {
+        throw "Mode '$Mode' is supported only for list fields."
+    }
+
+    $items = @($valueText -split ',' | ForEach-Object { "$($_)".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($items.Count -eq 0) {
+        throw 'Please provide at least one comma-separated value.'
+    }
+
+    $existing = @($cfg.$Key)
+    if ($Mode -eq 'add') {
+        $merged = @($existing)
+        foreach ($item in $items) {
+            $exists = @($merged | Where-Object { "$($_)" -ceq "$item" }).Count -gt 0
+            if (-not $exists) {
+                $merged += $item
+            }
+        }
+        $cfg.$Key = $merged
+    } elseif ($Mode -eq 'remove') {
+        $toRemove = @{}
+        foreach ($item in $items) {
+            $toRemove["$item".ToLowerInvariant()] = $true
+        }
+
+        $remaining = @($existing | Where-Object {
+            $k = "$_".ToLowerInvariant()
+            -not $toRemove.ContainsKey($k)
+        })
+        $cfg.$Key = $remaining
+    } else {
+        throw "Unsupported edit mode: $Mode"
+    }
+
+    Save-SearchConfigObject -Config $cfg
+    return $cfg
+}
+
+function Get-SearchConfigStatusMessage {
+    $cfg = Get-SearchConfigObject
+    $scheduler = Get-SearchSchedulerState
+
+    $queries = if ($cfg.queries) { (@($cfg.queries) -join ', ') } else { '<none>' }
+    $locations = if ($cfg.locations) { (@($cfg.locations) -join ', ') } else { '<none>' }
+    $allowedLocationKeywords = if ($cfg.allowedLocationKeywords) { (@($cfg.allowedLocationKeywords) -join ', ') } else { '<none>' }
+    $excludeTitleKeywords = if ($cfg.excludeTitleKeywords) { (@($cfg.excludeTitleKeywords) -join ', ') } else { '<none>' }
+
+    $schedulerStatus = if ([bool]$scheduler.enabled) { 'enabled' } else { 'disabled' }
+    $nextRun = if ($scheduler.next_run_utc) { "$($scheduler.next_run_utc)" } else { 'n/a' }
+
+    $lines = @()
+    $lines += "&#128269; <b>Search configuration</b>"
+    $lines += "queries: <code>$([System.Security.SecurityElement]::Escape($queries))</code>"
+    $lines += "locations: <code>$([System.Security.SecurityElement]::Escape($locations))</code>"
+    $lines += "allowedLocationKeywords: <code>$([System.Security.SecurityElement]::Escape($allowedLocationKeywords))</code>"
+    $lines += "excludeTitleKeywords: <code>$([System.Security.SecurityElement]::Escape($excludeTitleKeywords))</code>"
+    $lines += "resultsPerQuery: <code>$($cfg.resultsPerQuery)</code>"
+    $lines += "hoursOld: <code>$($cfg.hoursOld)</code>"
+    $lines += "minDisqualifyingYears: <code>$($cfg.minDisqualifyingYears)</code>"
+    $lines += "allowUnknownLocation: <code>$($cfg.allowUnknownLocation)</code>"
+    $lines += ""
+    $lines += "&#9201; scheduler: <b>$schedulerStatus</b>"
+    $lines += "interval_seconds: <code>$($scheduler.interval_seconds)</code>"
+    $lines += "next_run_utc: <code>$([System.Security.SecurityElement]::Escape($nextRun))</code>"
+    $lines += ""
+    $lines += "Use <code>/search_set &lt;key&gt; &lt;value&gt;</code> (arrays as comma-separated)."
+    return ($lines -join "`n")
+}
+
+function Set-SearchConfigValue {
+    param(
+        [Parameter(Mandatory=$true)][string]$Key,
+        [Parameter(Mandatory=$true)][string]$RawValue
+    )
+
+    $allowedKeys = @(
+        'queries', 'locations', 'allowedLocationKeywords', 'excludeTitleKeywords',
+        'allowUnknownLocation', 'minDisqualifyingYears', 'maxAgeHours', 'hoursOld', 'resultsPerQuery'
+    )
+
+    if ($allowedKeys -notcontains $Key) {
+        throw "Key '$Key' is not editable via Telegram."
+    }
+
+    $cfg = Get-SearchConfigObject
+    $valueText = "$RawValue".Trim()
+
+    switch ($Key) {
+        'queries' {
+            $items = @($valueText -split ',' | ForEach-Object { "$($_)".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($items.Count -eq 0) { throw 'queries must contain at least one item.' }
+            $cfg.queries = $items
+        }
+        'locations' {
+            $items = @($valueText -split ',' | ForEach-Object { "$($_)".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($items.Count -eq 0) { throw 'locations must contain at least one item.' }
+            $cfg.locations = $items
+        }
+        'allowedLocationKeywords' {
+            $items = @($valueText -split ',' | ForEach-Object { "$($_)".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $cfg.allowedLocationKeywords = $items
+        }
+        'excludeTitleKeywords' {
+            $items = @($valueText -split ',' | ForEach-Object { "$($_)".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $cfg.excludeTitleKeywords = $items
+        }
+        'allowUnknownLocation' {
+            if ($valueText -match '^(true|1|yes|on)$') {
+                $cfg.allowUnknownLocation = $true
+            } elseif ($valueText -match '^(false|0|no|off)$') {
+                $cfg.allowUnknownLocation = $false
+            } else {
+                throw "allowUnknownLocation must be true/false."
+            }
+        }
+        'minDisqualifyingYears' {
+            $n = [int]$valueText
+            if ($n -lt 0 -or $n -gt 20) { throw 'minDisqualifyingYears must be 0..20.' }
+            $cfg.minDisqualifyingYears = $n
+        }
+        'maxAgeHours' {
+            $n = [int]$valueText
+            if ($n -lt 1 -or $n -gt 720) { throw 'maxAgeHours must be 1..720.' }
+            $cfg.maxAgeHours = $n
+        }
+        'hoursOld' {
+            $n = [int]$valueText
+            if ($n -lt 1 -or $n -gt 720) { throw 'hoursOld must be 1..720.' }
+            $cfg.hoursOld = $n
+        }
+        'resultsPerQuery' {
+            $n = [int]$valueText
+            if ($n -lt 1 -or $n -gt 200) { throw 'resultsPerQuery must be 1..200.' }
+            $cfg.resultsPerQuery = $n
+        }
+    }
+
+    Save-SearchConfigObject -Config $cfg
+    return $cfg
+}
+
+function Get-SearchEditableKeys {
+    return @(
+        'queries',
+        'locations',
+        'allowedLocationKeywords',
+        'excludeTitleKeywords',
+        'allowUnknownLocation',
+        'minDisqualifyingYears',
+        'maxAgeHours',
+        'hoursOld',
+        'resultsPerQuery'
+    )
+}
+
+function Get-SearchConfigEditKeyboardMarkup {
+    $rows = @()
+    foreach ($k in Get-SearchEditableKeys) {
+        $rows += ,@(@{ text = "Edit: $k"; callback_data = "cf_search_key|$k" })
+    }
+    $rows += ,@(@{ text = 'Refresh config'; callback_data = 'cf_search_config_refresh' }, @{ text = 'Cancel pending edit'; callback_data = 'cf_search_edit_cancel' })
+    return @{ inline_keyboard = $rows }
+}
+
+function Get-SearchSetHelpMessage {
+    param([Parameter(Mandatory=$true)][string]$Key)
+
+    $keyEsc = [System.Security.SecurityElement]::Escape($Key)
+    switch ($Key) {
+        'queries' {
+            return "&#9998;&#65039; Set <code>$keyEsc</code> with comma-separated values.`nExample: <code>/search_set queries Junior Fullstack Developer,Junior Backend Developer</code>"
+        }
+        'locations' {
+            return "&#9998;&#65039; Set <code>$keyEsc</code> with comma-separated values.`nExample: <code>/search_set locations Israel,Remote</code>"
+        }
+        'allowedLocationKeywords' {
+            return "&#9998;&#65039; Set <code>$keyEsc</code> with comma-separated city keywords.`nExample: <code>/search_set allowedLocationKeywords Tel Aviv,Ramat Gan</code>"
+        }
+        'excludeTitleKeywords' {
+            return "&#9998;&#65039; Set <code>$keyEsc</code> with comma-separated seniority words.`nExample: <code>/search_set excludeTitleKeywords Senior,Lead,Principal</code>"
+        }
+        'allowUnknownLocation' {
+            return "&#9998;&#65039; Set <code>$keyEsc</code> as boolean.`nExample: <code>/search_set allowUnknownLocation true</code>"
+        }
+        default {
+            return "&#9998;&#65039; Set <code>$keyEsc</code>.`nExample: <code>/search_set $keyEsc 5</code>"
+        }
+    }
+}
+
+function Invoke-SearchPipeline {
+    param(
+        [Parameter(Mandatory=$true)][string]$Trigger,
+        [Parameter(Mandatory=$true)][string]$BotToken,
+        [Parameter(Mandatory=$true)][string]$ChatId
+    )
+
+    if ($script:SearchRunInProgress) {
+        return [PSCustomObject]@{
+            ok = $false
+            message = 'Search is already in progress.'
+            jobsCount = 0
+        }
+    }
+
+    if (-not (Test-Path $searchWrapperScriptPath)) {
+        return [PSCustomObject]@{ ok = $false; message = "Missing script: $searchWrapperScriptPath"; jobsCount = 0 }
+    }
+    if (-not (Test-Path $processJobsScriptPath)) {
+        return [PSCustomObject]@{ ok = $false; message = "Missing script: $processJobsScriptPath"; jobsCount = 0 }
+    }
+
+    $script:SearchRunInProgress = $true
+    try {
+        Push-Location $workspaceRoot
+        try {
+            & $searchWrapperScriptPath 2>&1 | Out-Host
+            $wrapperExit = $LASTEXITCODE
+            if ($wrapperExit -ne 0) {
+                return [PSCustomObject]@{ ok = $false; message = "job_search_wrapper failed (exit=$wrapperExit)"; jobsCount = 0 }
+            }
+
+            & $processJobsScriptPath 2>&1 | Out-Host
+            $processExit = $LASTEXITCODE
+            if ($processExit -ne 0) {
+                return [PSCustomObject]@{ ok = $false; message = "process_jobs failed (exit=$processExit)"; jobsCount = 0 }
+            }
+        } finally {
+            Pop-Location
+        }
+
+        $jobsCount = 0
+        $jobsFoundPath = Join-Path $workspaceRoot 'jobs_found.json'
+        if (Test-Path $jobsFoundPath) {
+            try {
+                $jobs = Get-Content -Path $jobsFoundPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($jobs) { $jobsCount = @($jobs).Count }
+            } catch {}
+        }
+
+        return [PSCustomObject]@{
+            ok = $true
+            message = "Search completed via $Trigger. jobs_found=$jobsCount"
+            jobsCount = $jobsCount
+        }
+    } catch {
+        return [PSCustomObject]@{
+            ok = $false
+            message = "Search pipeline error: $($_.Exception.Message)"
+            jobsCount = 0
+        }
+    } finally {
+        $script:SearchRunInProgress = $false
+    }
+}
+
+function Update-SearchSchedulerAfterRun {
+    param(
+        [Parameter(Mandatory=$true)][bool]$Success,
+        [string]$ErrorText
+    )
+
+    $state = Get-SearchSchedulerState
+    $nowUtc = (Get-Date).ToUniversalTime().ToString('o')
+    $state.last_run_utc = $nowUtc
+    $state.last_status = if ($Success) { 'ok' } else { 'failed' }
+    $state.last_error = if ($Success) { '' } else { "$ErrorText" }
+
+    if ([bool]$state.enabled -and [int]$state.interval_seconds -gt 0) {
+        $state.next_run_utc = (Get-Date).ToUniversalTime().AddSeconds([int]$state.interval_seconds).ToString('o')
+    }
+
+    Save-SearchSchedulerState -State $state
+}
+
+function Try-RunScheduledSearch {
+    param(
+        [Parameter(Mandatory=$true)][string]$BotToken,
+        [Parameter(Mandatory=$true)][string]$ChatId
+    )
+
+    $state = Get-SearchSchedulerState
+    if (-not [bool]$state.enabled) { return }
+    if ([int]$state.interval_seconds -le 0) { return }
+    if ([string]::IsNullOrWhiteSpace("$($state.next_run_utc)")) { return }
+
+    try {
+        $nextRunUtc = [datetime]::Parse("$($state.next_run_utc)").ToUniversalTime()
+    } catch {
+        return
+    }
+
+    if ((Get-Date).ToUniversalTime() -lt $nextRunUtc) {
+        return
+    }
+
+    $result = Invoke-SearchPipeline -Trigger 'scheduler' -BotToken $BotToken -ChatId $ChatId
+    Update-SearchSchedulerAfterRun -Success:$result.ok -ErrorText $result.message
+
+    try {
+        $safeMsg = [System.Security.SecurityElement]::Escape($result.message)
+        $prefix = if ($result.ok) { '&#9989;' } else { '&#9888;&#65039;' }
+        $msg = "$prefix Auto search run: <code>$safeMsg</code>"
+        Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+    } catch {}
+}
+
+function Get-ProjectConfigObject {
+    $candidatePaths = @($projectConfigLocalPath, $projectConfigExamplePath)
+    foreach ($cfgPath in $candidatePaths) {
+        if (-not (Test-Path $cfgPath)) {
+            continue
+        }
+
+        try {
+            $raw = Get-Content -Path $cfgPath -Raw -Encoding UTF8
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                continue
+            }
+
+            $cfg = $raw | ConvertFrom-Json -ErrorAction Stop
+            if ($cfg) {
+                return $cfg
+            }
+        } catch {
+            Write-Host "Ignoring invalid project config file '$cfgPath': $_"
+        }
+    }
+
+    return $null
+}
+
+function Get-TelegramCommandMenuConfig {
+    $defaults = [PSCustomObject]@{
+        enabled = $true
+        preserveExistingCommands = $true
+        visibleCommands = @()
+    }
+
+    $cfg = Get-ProjectConfigObject
+    if (-not $cfg -or -not $cfg.careerforge -or -not $cfg.careerforge.telegram -or -not $cfg.careerforge.telegram.commandMenu) {
+        return $defaults
+    }
+
+    $menu = $cfg.careerforge.telegram.commandMenu
+    $visible = @()
+    if ($menu.visibleCommands) {
+        $visible = @($menu.visibleCommands | ForEach-Object { "$($_)".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    return [PSCustomObject]@{
+        enabled = if ($null -ne $menu.enabled) { [bool]$menu.enabled } else { $true }
+        preserveExistingCommands = if ($null -ne $menu.preserveExistingCommands) { [bool]$menu.preserveExistingCommands } else { $true }
+        visibleCommands = $visible
+    }
+}
+
+function Resolve-VisibleTelegramCommands {
+    param(
+        [Parameter(Mandatory=$true)]$CommandCatalog,
+        [Parameter(Mandatory=$false)]$VisibleCommands
+    )
+
+    $requested = @()
+    if ($VisibleCommands) {
+        $requested = @($VisibleCommands | ForEach-Object { "$($_)".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    if ($requested.Count -eq 0) {
+        return @($CommandCatalog)
+    }
+
+    $requestedSet = @{}
+    foreach ($name in $requested) {
+        $requestedSet[$name] = $true
+    }
+
+    $filtered = @()
+    foreach ($cmd in @($CommandCatalog)) {
+        $cmdName = "$($cmd.command)"
+        if ($requestedSet.ContainsKey($cmdName)) {
+            $filtered += [PSCustomObject]@{
+                command = "$($cmd.command)"
+                description = "$($cmd.description)"
+            }
+        }
+    }
+
+    return @($filtered)
+}
+
+function Merge-TelegramCommands {
+    param(
+        [Parameter(Mandatory=$true)]$ExistingCommands,
+        [Parameter(Mandatory=$true)]$DesiredCommands,
+        [bool]$PreserveExisting = $true
+    )
+
+    $merged = @()
+    $indexByName = @{}
+
+    if ($PreserveExisting -and $ExistingCommands) {
+        foreach ($cmd in @($ExistingCommands)) {
+            $name = "$($cmd.command)".Trim()
+            $description = "$($cmd.description)".Trim()
+            if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($description)) {
+                continue
+            }
+            if ($indexByName.ContainsKey($name)) {
+                continue
+            }
+
+            $indexByName[$name] = $merged.Count
+            $merged += [PSCustomObject]@{
+                command = $name
+                description = $description
+            }
+        }
+    }
+
+    foreach ($cmd in @($DesiredCommands)) {
+        $name = "$($cmd.command)".Trim()
+        $description = "$($cmd.description)".Trim()
+        if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($description)) {
+            continue
+        }
+
+        if ($indexByName.ContainsKey($name)) {
+            $idx = [int]$indexByName[$name]
+            $merged[$idx] = [PSCustomObject]@{
+                command = $name
+                description = $description
+            }
+        } else {
+            $indexByName[$name] = $merged.Count
+            $merged += [PSCustomObject]@{
+                command = $name
+                description = $description
+            }
+        }
+    }
+
+    return @($merged)
+}
+
+function Backup-TelegramCommandsSnapshot {
+    param(
+        [Parameter(Mandatory=$true)][string]$ScopeName,
+        $Commands
+    )
+
+    if ($null -eq $Commands) {
+        $Commands = @()
+    }
+
+    if (-not (Test-Path $telegramCommandsBackupDir)) {
+        New-Item -ItemType Directory -Path $telegramCommandsBackupDir -Force | Out-Null
+    }
+
+    $safeScopeName = ($ScopeName -replace '[^A-Za-z0-9_\-]', '_')
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+    $backupPath = Join-Path $telegramCommandsBackupDir ("${stamp}_${safeScopeName}.json")
+
+    $payload = [ordered]@{
+        created_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+        scope = $ScopeName
+        commands_count = @($Commands).Count
+        commands = @($Commands)
+    }
+
+    $payload | ConvertTo-Json -Depth 10 | Set-Content -Path $backupPath -Encoding UTF8
+    return $backupPath
+}
+
 $botToken = Get-TelegramBotToken -WorkspaceRoot $workspaceRoot
 if (-not $botToken) {
     Write-Host 'TELEGRAM_BOT_TOKEN not found in .env or environment.'
@@ -697,13 +1404,20 @@ try {
 }
 
 try {
-    $requiredMenuCommands = @(
+    $commandCatalog = @(
         @{ command = 'start'; description = 'Initialize chat and show current status' },
         @{ command = 'restart'; description = 'Hot-restart the agent' },
         @{ command = 'status'; description = 'Show gateway/skills/model status' },
         @{ command = 'stop'; description = 'Stop current agent run' },
         @{ command = 'paths'; description = 'Show OpenClaw config/state/workspace paths' },
-        @{ command = 'search'; description = 'Run jobs search flow' },
+        @{ command = 'search_agent'; description = 'Agent-filtered search (AI mode)' },
+        @{ command = 'search_cli'; description = 'Direct CLI search + per-job notifications' },
+        @{ command = 'search'; description = 'Alias: direct CLI search' },
+        @{ command = 'search_start'; description = 'Alias: direct CLI search' },
+        @{ command = 'search_timer'; description = 'Set auto search interval (e.g. 6h/2d)' },
+        @{ command = 'search_stop'; description = 'Stop auto search scheduler' },
+        @{ command = 'search_config'; description = 'Show current search config and scheduler' },
+        @{ command = 'search_set'; description = 'Update search config key/value' },
         @{ command = 'jobs'; description = 'Show latest jobs summary' },
         @{ command = 'profile'; description = 'Show active profile information' },
         @{ command = 'help'; description = 'List available commands' },
@@ -713,40 +1427,41 @@ try {
         @{ command = 'open_tasks'; description = 'Show all non-closed tasks' }
     )
 
-    function Merge-OpenTasksCommand {
-        param(
-            [Parameter(Mandatory=$true)]$ExistingCommands
-        )
-
-        $merged = @()
-        if ($ExistingCommands) {
-            $merged += @($ExistingCommands)
+    $menuCfg = Get-TelegramCommandMenuConfig
+    if (-not [bool]$menuCfg.enabled) {
+        Write-Host 'Telegram bot menu sync is disabled by project config (careerforge.telegram.commandMenu.enabled=false).'
+    } else {
+        $desiredCommands = Resolve-VisibleTelegramCommands -CommandCatalog $commandCatalog -VisibleCommands $menuCfg.visibleCommands
+        if (@($desiredCommands).Count -eq 0) {
+            throw 'Configured visibleCommands resolved to an empty command list. Refusing to clear bot menu.'
         }
 
-        foreach ($required in $requiredMenuCommands) {
-            $cmdName = "$($required.command)"
-            $exists = @($merged | Where-Object { "$($_.command)" -eq $cmdName }).Count -gt 0
-            if (-not $exists) {
-                $merged += [PSCustomObject]@{
-                    command = "$($required.command)"
-                    description = "$($required.description)"
-                }
-            }
+        $preserveExisting = [bool]$menuCfg.preserveExistingCommands
+
+        $defaultCommands = Get-TelegramBotCommandsDeterministic -BotToken $botToken
+        $defaultBackupPath = Backup-TelegramCommandsSnapshot -ScopeName 'default_pre_sync' -Commands $defaultCommands
+        $defaultMerged = Merge-TelegramCommands -ExistingCommands $defaultCommands -DesiredCommands $desiredCommands -PreserveExisting:$preserveExisting
+        Set-TelegramBotCommandsDeterministic -BotToken $botToken -Commands $defaultMerged | Out-Null
+
+        $privateScope = @{ type = 'all_private_chats' }
+        $privateCommands = Get-TelegramBotCommandsDeterministic -BotToken $botToken -Scope $privateScope
+        $privateBackupPath = Backup-TelegramCommandsSnapshot -ScopeName 'all_private_chats_pre_sync' -Commands $privateCommands
+        $privateMerged = Merge-TelegramCommands -ExistingCommands $privateCommands -DesiredCommands $desiredCommands -PreserveExisting:$preserveExisting
+        Set-TelegramBotCommandsDeterministic -BotToken $botToken -Commands $privateMerged -Scope $privateScope | Out-Null
+
+        $chatBackupPath = ''
+        try {
+            $chatScope = @{ type = 'chat'; chat_id = [int64]$ChatId }
+            $chatCommands = Get-TelegramBotCommandsDeterministic -BotToken $botToken -Scope $chatScope
+            $chatBackupPath = Backup-TelegramCommandsSnapshot -ScopeName 'chat_pre_sync' -Commands $chatCommands
+            $chatMerged = Merge-TelegramCommands -ExistingCommands $chatCommands -DesiredCommands $desiredCommands -PreserveExisting:$preserveExisting
+            Set-TelegramBotCommandsDeterministic -BotToken $botToken -Commands $chatMerged -Scope $chatScope | Out-Null
+        } catch {
+            Write-Host "Chat-scope command sync skipped: $_"
         }
 
-        return @($merged)
+        Write-Host "Registered Telegram bot menu commands (config-driven). preserveExisting=$preserveExisting defaultBackup='$defaultBackupPath' privateBackup='$privateBackupPath' chatBackup='$chatBackupPath'"
     }
-
-    $defaultCommands = Get-TelegramBotCommandsDeterministic -BotToken $botToken
-    $defaultMerged = Merge-OpenTasksCommand -ExistingCommands $defaultCommands
-    Set-TelegramBotCommandsDeterministic -BotToken $botToken -Commands $defaultMerged | Out-Null
-
-    $privateScope = @{ type = 'all_private_chats' }
-    $privateCommands = Get-TelegramBotCommandsDeterministic -BotToken $botToken -Scope $privateScope
-    $privateMerged = Merge-OpenTasksCommand -ExistingCommands $privateCommands
-    Set-TelegramBotCommandsDeterministic -BotToken $botToken -Commands $privateMerged -Scope $privateScope | Out-Null
-
-    Write-Host 'Registered Telegram bot menu commands with merge strategy (default/private scopes)'
 } catch {
     Write-Host "Failed to register Telegram bot menu commands: $_"
 }
@@ -882,6 +1597,109 @@ while ($true) {
                     continue
                 }
 
+                if ($callbackData -eq 'cf_search_config_refresh') {
+                    try {
+                        $statusMsg = Get-SearchConfigStatusMessage
+                        $kb = Get-SearchConfigEditKeyboardMarkup
+                        Send-TelegramTextWithReplyMarkupDeterministic -BotToken $botToken -ChatId $ChatId -Text $statusMsg -ReplyMarkup $kb -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                    } catch {
+                        Write-Host "Failed to send search config refresh: $_"
+                    }
+                    continue
+                }
+
+                if ($callbackData -eq 'cf_search_set_menu') {
+                    try {
+                        $usage = "&#8505;&#65039; Choose a field to edit. Then choose replace/add/remove and send the value as your next message."
+                        $kb = Get-SearchConfigEditKeyboardMarkup
+                        Send-TelegramTextWithReplyMarkupDeterministic -BotToken $botToken -ChatId $ChatId -Text $usage -ReplyMarkup $kb -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                    } catch {
+                        Write-Host "Failed to send search set menu: $_"
+                    }
+                    continue
+                }
+
+                if ($callbackData -eq 'cf_search_edit_cancel') {
+                    try {
+                        Clear-SearchPendingEditForChat -ChatId "$ChatId"
+                        $msg = '&#9989; Pending search edit was cancelled.'
+                        Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                    } catch {
+                        Write-Host "Failed to cancel pending search edit: $_"
+                    }
+                    continue
+                }
+
+                if ($callbackData -like 'cf_search_key|*') {
+                    try {
+                        $parts = "$callbackData" -split '\|', 2
+                        $key = if ($parts.Count -ge 2) { "$($parts[1])" } else { '' }
+                        if ([string]::IsNullOrWhiteSpace($key)) {
+                            throw 'Missing key in callback data.'
+                        }
+
+                        $allowed = Get-SearchEditableKeys
+                        if ($allowed -notcontains $key) {
+                            throw "Unsupported editable key: $key"
+                        }
+
+                        Set-SearchPendingEditForChat -ChatId "$ChatId" -Key $key -Mode 'replace'
+                        $cfg = Get-SearchConfigObject
+                        $currentValue = Get-SearchConfigKeyCurrentValueText -Config $cfg -Key $key
+                        $currentValueEsc = [System.Security.SecurityElement]::Escape($currentValue)
+                        $keyEsc = [System.Security.SecurityElement]::Escape($key)
+                        $help = Get-SearchSetHelpMessage -Key $key
+                        $msg = "&#128221; <b>Editing field:</b> <code>$keyEsc</code>`nCurrent value: <code>$currentValueEsc</code>`n`n$help"
+                        $kb = Get-SearchEditModeKeyboardMarkup -Key $key
+                        Send-TelegramTextWithReplyMarkupDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -ReplyMarkup $kb -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                    } catch {
+                        Write-Host "Failed to process search key callback: $_"
+                        try {
+                            $errMsg = "&#9888;&#65039; Could not prepare search field edit flow. Try <code>/search_set &lt;key&gt; &lt;value&gt;</code>."
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $errMsg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {}
+                    }
+                    continue
+                }
+
+                if ($callbackData -like 'cf_search_mode|*') {
+                    try {
+                        $parts = "$callbackData" -split '\|', 3
+                        if ($parts.Count -lt 3) {
+                            throw "Invalid callback data: $callbackData"
+                        }
+
+                        $key = "$($parts[1])".Trim()
+                        $mode = "$($parts[2])".Trim().ToLowerInvariant()
+                        $allowed = Get-SearchEditableKeys
+                        if ($allowed -notcontains $key) {
+                            throw "Unsupported editable key: $key"
+                        }
+
+                        if (@('replace', 'add', 'remove') -notcontains $mode) {
+                            throw "Unsupported edit mode: $mode"
+                        }
+
+                        if (($mode -ne 'replace') -and -not (Test-IsSearchArrayKey -Key $key)) {
+                            throw "Mode '$mode' is only available for list fields."
+                        }
+
+                        Set-SearchPendingEditForChat -ChatId "$ChatId" -Key $key -Mode $mode
+                        $modeEsc = [System.Security.SecurityElement]::Escape($mode)
+                        $keyEsc = [System.Security.SecurityElement]::Escape($key)
+                        $hint = if ($mode -eq 'replace') { 'Send next message with the new value.' } else { 'Send next message with comma-separated values.' }
+                        $msg = "&#9989; Edit mode set: <code>$modeEsc</code> for <code>$keyEsc</code>.`n$hint"
+                        Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                    } catch {
+                        Write-Host "Failed to process search mode callback: $_"
+                        try {
+                            $errMsg = "&#9888;&#65039; Could not set edit mode. Please choose the field again from <code>/search_set</code>."
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $errMsg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {}
+                    }
+                    continue
+                }
+
                 if ($callbackData -like 'cf_model_set|*') {
                     $parts = "$callbackData" -split '\|', 2
                     $requestedModel = if ($parts.Count -ge 2) { "$($parts[1])" } else { '' }
@@ -921,6 +1739,157 @@ while ($true) {
 
                 if ($u.message.text) {
                     $text = "$($u.message.text)".Trim()
+
+                    $pending = Get-SearchPendingEditForChat -ChatId "$ChatId"
+                    if ($pending -and -not [string]::IsNullOrWhiteSpace("$text") -and -not $text.StartsWith('/')) {
+                        try {
+                            $pendingKey = "$($pending.key)".Trim()
+                            $pendingMode = "$($pending.mode)".Trim().ToLowerInvariant()
+                            Apply-SearchConfigEdit -Key $pendingKey -Mode $pendingMode -RawValue $text | Out-Null
+
+                            $cfgAfter = Get-SearchConfigObject
+                            $current = Get-SearchConfigKeyCurrentValueText -Config $cfgAfter -Key $pendingKey
+                            $keyEsc = [System.Security.SecurityElement]::Escape($pendingKey)
+                            $modeEsc = [System.Security.SecurityElement]::Escape($pendingMode)
+                            $currentEsc = [System.Security.SecurityElement]::Escape($current)
+
+                            $msg = "&#9989; Updated <code>$keyEsc</code> using mode <code>$modeEsc</code>.`nCurrent value: <code>$currentEsc</code>"
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to apply pending search config edit: $_"
+                            try {
+                                $err = [System.Security.SecurityElement]::Escape("$($_.Exception.Message)")
+                                $msg = "&#9888;&#65039; Pending edit failed: <code>$err</code>"
+                                Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                            } catch {}
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/search_agent' -or $text -like '/search_agent@*') {
+                        try {
+                            $msg = "&#129302; <b>Agent-filtered mode</b>`nThis mode is handled by your OpenClaw agent runtime and may return AI summaries.`nUse <code>/search_cli</code> for direct CLI automation with per-job notifications."
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /search_agent command: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/search_cli' -or $text -like '/search_cli@*' -or $text -eq '/search' -or $text -like '/search@*' -or $text -eq '/search_start' -or $text -like '/search_start@*') {
+                        try {
+                            $result = Invoke-SearchPipeline -Trigger 'manual_cli_command' -BotToken $botToken -ChatId $ChatId
+                            $safe = [System.Security.SecurityElement]::Escape($result.message)
+                            $prefix = if ($result.ok) { '&#9989;' } else { '&#9888;&#65039;' }
+                            $msg = "$prefix <b>CLI search run result</b>`n<code>$safe</code>"
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /search_cli command: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/search_stop' -or $text -like '/search_stop@*') {
+                        try {
+                            $state = Get-SearchSchedulerState
+                            $state.enabled = $false
+                            $state.next_run_utc = $null
+                            Save-SearchSchedulerState -State $state
+                            $msg = '&#9209; Auto job-search scheduler stopped.'
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /search_stop command: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/search_config' -or $text -like '/search_config@*') {
+                        try {
+                            $msg = Get-SearchConfigStatusMessage
+                            $kb = Get-SearchConfigEditKeyboardMarkup
+                            Send-TelegramTextWithReplyMarkupDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -ReplyMarkup $kb -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /search_config command: $_"
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/search_timer' -or $text -like '/search_timer@*' -or $text -like '/search_timer *' -or $text -like '/search_timer@* *') {
+                        try {
+                            $commandText = $text
+                            if ($commandText -like '/search_timer@* *') {
+                                $commandText = ($commandText -replace '^/search_timer@[^\s]+\s+', '/search_timer ')
+                            } elseif ($commandText -like '/search_timer@*') {
+                                $commandText = '/search_timer'
+                            }
+
+                            $arg = ''
+                            if ($commandText -match '^/search_timer\s+(.+)$') {
+                                $arg = "$($matches[1])".Trim()
+                            }
+
+                            if ([string]::IsNullOrWhiteSpace($arg)) {
+                                $state = Get-SearchSchedulerState
+                                $enabled = if ([bool]$state.enabled) { 'enabled' } else { 'disabled' }
+                                $nextRun = if ($state.next_run_utc) { "$($state.next_run_utc)" } else { 'n/a' }
+                                $msg = "&#9201; <b>Auto search scheduler</b>`nstatus: <b>$enabled</b>`ninterval_seconds: <code>$($state.interval_seconds)</code>`nnext_run_utc: <code>$([System.Security.SecurityElement]::Escape($nextRun))</code>`nUsage: <code>/search_timer 6h</code> or <code>/search_timer 2d</code>"
+                                Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                                continue
+                            }
+
+                            $intervalSeconds = Parse-SearchTimerIntervalSeconds -InputText $arg
+                            $state = Get-SearchSchedulerState
+                            $state.enabled = $true
+                            $state.interval_seconds = $intervalSeconds
+                            $state.next_run_utc = (Get-Date).ToUniversalTime().AddSeconds($intervalSeconds).ToString('o')
+                            $state.last_error = ''
+                            Save-SearchSchedulerState -State $state
+
+                            $msg = "&#9989; Auto search timer set to <code>$arg</code> (<code>$intervalSeconds</code> seconds). Next run at <code>$([System.Security.SecurityElement]::Escape($state.next_run_utc))</code>."
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /search_timer command: $_"
+                            try {
+                                $msg = "&#9888;&#65039; Failed to set timer. Use <code>/search_timer 6h</code> or <code>/search_timer 2d</code>."
+                                Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                            } catch {}
+                        }
+                        continue
+                    }
+
+                    if ($text -eq '/search_set' -or $text -like '/search_set@*' -or $text -like '/search_set *' -or $text -like '/search_set@* *') {
+                        try {
+                            $commandText = $text
+                            if ($commandText -like '/search_set@* *') {
+                                $commandText = ($commandText -replace '^/search_set@[^\s]+\s+', '/search_set ')
+                            } elseif ($commandText -like '/search_set@*') {
+                                $commandText = '/search_set'
+                            }
+
+                            if ($commandText -notmatch '^/search_set\s+(?<key>\S+)\s+(?<value>.+)$') {
+                                $usage = "&#8505;&#65039; Choose a field to edit. Then choose replace/add/remove and send value as next message, or use direct syntax.`n<code>/search_set &lt;key&gt; &lt;value&gt;</code>"
+                                $kb = Get-SearchConfigEditKeyboardMarkup
+                                Send-TelegramTextWithReplyMarkupDeterministic -BotToken $botToken -ChatId $ChatId -Text $usage -ReplyMarkup $kb -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                                continue
+                            }
+
+                            $key = "$($matches['key'])".Trim()
+                            $value = "$($matches['value'])".Trim()
+                            Set-SearchConfigValue -Key $key -RawValue $value | Out-Null
+
+                            $msg = "&#9989; Updated <code>$([System.Security.SecurityElement]::Escape($key))</code> to <code>$([System.Security.SecurityElement]::Escape($value))</code>."
+                            Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                        } catch {
+                            Write-Host "Failed to handle /search_set command: $_"
+                            try {
+                                $safeErr = [System.Security.SecurityElement]::Escape("$($_.Exception.Message)")
+                                $msg = "&#9888;&#65039; Failed to update config: <code>$safeErr</code>"
+                                Send-TelegramTextDeterministic -BotToken $botToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode 'HTML' | Out-Null
+                            } catch {}
+                        }
+                        continue
+                    }
+
                     if ($text -eq '/open_tasks' -or $text -like '/open_tasks@*') {
                         try {
                             $msg = Get-OpenTaskStatusesMessage -TrackerPath $trackerPath
@@ -1016,6 +1985,12 @@ while ($true) {
 
     if ($Once) {
         break
+    }
+
+    try {
+        Try-RunScheduledSearch -BotToken $botToken -ChatId $ChatId
+    } catch {
+        Write-Host "Scheduled search execution error: $_"
     }
 
     Start-Sleep -Seconds $PollIntervalSeconds

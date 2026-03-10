@@ -228,3 +228,56 @@ Controller returns:
 ---
 
 This plan is intentionally execution-oriented and mapped to current repository structure.
+
+---
+
+## 9) Change Rationale + Ready Fallback Options (Telegram Search Control)
+
+### Why this change
+
+נדרש להוסיף שליטה מלאה מהטלגרם על ריצות חיפוש משרות כדי לצמצם תלות בהפעלה ידנית ולשפר עקביות תפעולית:
+
+1. הפעלה מיידית מהצ'אט (`/search_start`) ללא כניסה לטרמינל.
+2. אוטומציה מתוזמנת (`/search_timer`) כל X שעות/ימים.
+3. עצירה נקייה של אוטומציה (`/search_stop`).
+4. שינוי פרמטרים תפעוליים של מנוע החיפוש מהטלגרם (`/search_config`, `/search_set`).
+
+השינוי מיישר קו עם עקרונות המערכת: Human-in-the-loop, determinism, auditability, ו-reliability over magic.
+
+### Primary solution
+
+- Listener יחזיק scheduler state מקומי בקובץ `memory/telegram_search_scheduler.json`.
+- פקודות Telegram יפעילו:
+  - הרצת חיפוש מיידית,
+  - תזמון אוטומטי,
+  - עצירת תזמון,
+  - עדכון קונפיג עם allowlist key validation.
+
+### Alternative fallback solutions (if primary approach fails)
+
+1. **Windows Task Scheduler fallback**
+   - ליצור משימה מערכתית חיצונית במקום scheduler בתוך listener.
+   - יתרון: יציבות גבוהה לאורך זמן/ריסטארטים.
+   - חסרון: מורכבות תפעול והרשאות.
+
+2. **External cron/service wrapper**
+   - תזמון מחוץ ל-listener (service נפרד).
+   - יתרון: הפרדת אחריות טובה יותר.
+   - חסרון: עוד רכיב לתחזק.
+
+3. **Config staging mode**
+   - `search_set` כותב ל-pending config ורק `/search_apply` מחיל בפועל.
+   - יתרון: מניעת טעויות תפעול בזמן אמת.
+   - חסרון: צעד נוסף למשתמש.
+
+4. **Safe mode (no live config writes)**
+   - פקודות טלגרם מציגות קונפיג והמלצות בלבד; שינוי בפועל רק מקומית.
+   - יתרון: סיכון מינימלי.
+   - חסרון: פחות אוטומציה.
+
+### Rollback plan
+
+- אם יש תקלה בפקודות החדשות:
+  1. להשבית את הפקודות מה-menu merge.
+  2. להשאיר `search` ידני בלבד.
+  3. להשתמש ב-runbook טרמינלי (`job_search_wrapper.ps1` + `process_jobs.ps1`) עד תיקון.

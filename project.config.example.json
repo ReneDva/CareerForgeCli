@@ -56,6 +56,32 @@
         "my_chat_member"
       ],
       "pollIntervalSeconds": 3,
+      "commandMenu": {
+        "enabled": true,
+        "preserveExistingCommands": true,
+        "visibleCommands": [
+          "start",
+          "restart",
+          "status",
+          "stop",
+          "paths",
+          "search_agent",
+          "search_cli",
+          "search",
+          "search_start",
+          "search_timer",
+          "search_stop",
+          "search_config",
+          "search_set",
+          "jobs",
+          "profile",
+          "help",
+          "log",
+          "models",
+          "model",
+          "open_tasks"
+        ]
+      },
       "retry": {
         "maxRetries": 3,
         "retryDelaySeconds": 2

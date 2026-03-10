@@ -41,6 +41,53 @@ function Test-JobLink {
     }
 }
 
+function Send-JobIterationOutcomeMessage {
+    param(
+        [Parameter(Mandatory=$true)]$Job,
+        [Parameter(Mandatory=$true)][int]$SequenceNumber,
+        [Parameter(Mandatory=$true)][int]$TotalCount,
+        [Parameter(Mandatory=$true)][string]$OutcomeCode,
+        [Parameter(Mandatory=$true)][string]$ReasonText,
+        [Parameter(Mandatory=$true)][string]$BotToken,
+        [Parameter(Mandatory=$true)][string]$ChatId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BotToken)) {
+        return
+    }
+
+    $jobId = if ($Job.id) { "$($Job.id)" } else { "unknown-$SequenceNumber" }
+    $company = if ($Job.company) { "$($Job.company)" } else { 'Unknown' }
+    $title = if ($Job.title) { "$($Job.title)" } else { 'Unknown' }
+    $location = if ($Job.location) { "$($Job.location)" } else { 'Unknown' }
+    $url = if ($Job.job_url) { "$($Job.job_url)" } else { 'N/A' }
+
+    $jobIdEsc = [System.Security.SecurityElement]::Escape($jobId)
+    $companyEsc = [System.Security.SecurityElement]::Escape($company)
+    $titleEsc = [System.Security.SecurityElement]::Escape($title)
+    $locationEsc = [System.Security.SecurityElement]::Escape($location)
+    $urlEsc = [System.Security.SecurityElement]::Escape($url)
+    $reasonEsc = [System.Security.SecurityElement]::Escape($ReasonText)
+    $outcomeEsc = [System.Security.SecurityElement]::Escape($OutcomeCode)
+
+    $msg = @(
+        "&#128269; <b>Search iteration item $SequenceNumber/$TotalCount</b>",
+        "job_id: <code>$jobIdEsc</code>",
+        "company: <b>$companyEsc</b>",
+        "title: <b>$titleEsc</b>",
+        "location: <b>$locationEsc</b>",
+        "link: <code>$urlEsc</code>",
+        "result: <b>$outcomeEsc</b>",
+        "reason: <code>$reasonEsc</code>"
+    ) -join "`n"
+
+    try {
+        Send-TelegramTextDeterministic -BotToken $BotToken -ChatId $ChatId -Text $msg -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode "HTML" | Out-Null
+    } catch {
+        Write-Host "Failed to send iteration outcome message for job '$jobId': $_"
+    }
+}
+
 Initialize-JobTracker -TrackerPath $jobTrackerFile
 
 # --- Main Processing Logic ---
@@ -58,16 +105,27 @@ if (Test-Path $jobsFoundFile) {
             $sortedJobs = Sort-JobsForDeterministicDispatch -Jobs $jobs
             Write-Host "Processing $($sortedJobs.Count) jobs from $jobsFoundFile (deterministic order)."
             $sequence = 0
+            $sentCount = 0
+            $skippedCount = 0
+            $duplicateCount = 0
+            $invalidLinkCount = 0
+            $missingUrlCount = 0
 
             foreach ($job in $sortedJobs) {
                 $sequence += 1
                 if (-not ($job.job_url)) {
                     Write-Host "Skipping job with no URL: $($job.id)"
+                    $missingUrlCount += 1
+                    $skippedCount += 1
+                    Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'SKIPPED' -ReasonText 'missing_job_url' -BotToken $telegramBotToken -ChatId $telegramChatId
                     continue
                 }
 
                 if (-not (Test-JobLink -JobUrl $job.job_url)) {
                     Write-Host "Discarding job '$($job.id)' due to inactive link."
+                    $invalidLinkCount += 1
+                    $skippedCount += 1
+                    Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'SKIPPED' -ReasonText 'inactive_or_invalid_link' -BotToken $telegramBotToken -ChatId $telegramChatId
                     continue
                 }
 
@@ -93,6 +151,7 @@ if (Test-Path $jobsFoundFile) {
                             Set-JobStatus -TrackerPath $jobTrackerFile -JobId "$($job.id)" -NewStatus "Sent" -Reason "Job notification sent to Telegram" -FieldUpdates @{ telegram_message_id = $messageId }
                             Write-DispatchLog -JobId "$($job.id)" -Status "Sent" -Reason "telegram_message_dispatched"
                             Write-Host "Telegram message sent for job $($job.id)."
+                            $sentCount += 1
                             Start-Sleep -Seconds 5
                         } catch {
                             try {
@@ -102,6 +161,8 @@ if (Test-Path $jobsFoundFile) {
                                 Write-Host "Failed to persist failure state for job $($job.id): $_"
                             }
                             Write-Host "ERROR sending Telegram message for job $($job.id): $_"
+                            $skippedCount += 1
+                            Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'FAILED' -ReasonText 'telegram_send_failed' -BotToken $telegramBotToken -ChatId $telegramChatId
                         }
                     } else {
                         try {
@@ -111,9 +172,22 @@ if (Test-Path $jobsFoundFile) {
                         }
                         Write-Host "Skipping Telegram message for job $($job.id): TELEGRAM_BOT_TOKEN is not set."
                         Write-Host "Job Details (not sent): Company: $($job.company), Title: $($job.title), Location: $($job.location)"
+                        $skippedCount += 1
                     }
                 } else {
                     Write-Host "Job $($job.id) already tracked. Skipping duplicate notification."
+                    $duplicateCount += 1
+                    $skippedCount += 1
+                    Send-JobIterationOutcomeMessage -Job $job -SequenceNumber $sequence -TotalCount $sortedJobs.Count -OutcomeCode 'SKIPPED' -ReasonText 'already_tracked_duplicate' -BotToken $telegramBotToken -ChatId $telegramChatId
+                }
+            }
+
+            if ($telegramBotToken) {
+                $summary = "&#128202; <b>Iteration summary</b>`nprocessed: <code>$($sortedJobs.Count)</code>`nsent: <code>$sentCount</code>`nskipped: <code>$skippedCount</code>`n- missing_url: <code>$missingUrlCount</code>`n- invalid_link: <code>$invalidLinkCount</code>`n- duplicate: <code>$duplicateCount</code>"
+                try {
+                    Send-TelegramTextDeterministic -BotToken $telegramBotToken -ChatId $telegramChatId -Text $summary -MaxRetries 3 -RetryDelaySeconds 2 -ParseMode "HTML" | Out-Null
+                } catch {
+                    Write-Host "Failed to send iteration summary message: $_"
                 }
             }
         } else {

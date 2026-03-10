@@ -341,6 +341,65 @@ _Last updated: 2026-03-06_
 - סטטוס CandleKeep (2026-03-06): `ck` פעיל וזמין (`C:\Users\rened\.cargo\bin\ck.exe`), אך ב-VS integrated terminal (במיוחד `bash`) נדרש לוודא שהנתיב `C:\Users\rened\.cargo\bin` נמצא ב-PATH.
 - בקרת אורך פלט (החלטה ארכיטקטונית): אומצה אסטרטגיית multi-layer הכוללת budget לפי סקשנים בפרומפט + two-pass compaction + בדיקת A4 runtime + retries מוגבלים. ראו: `docs/CV_OUTPUT_LENGTH_CONTROL_DECISION.md`.
 
+---
+
+## 8) תוכנית מימוש מפורטת — "התוכנית הכי נכונה" לדיוק עובדתי ללא המצאות
+
+מטרה: לאפשר התאמה למשרה תוך שמירה על דיוק עובדתי מלא, כך שהמודל משנה **ניסוח והדגשה בלבד** ולא ממציא עובדות חדשות.
+
+### 8.1 עקרונות עבודה
+
+- `profile.md` נשאר מקור אמת קנוני ונעול (immutable input).
+- המודל עובד במצב **Fact-Locked + Wording-Only**.
+- כל עובדה חדשה שלא קיימת במקורות הקלט מוגדרת כ-failure.
+- עובדות על השכלה/מוסד/שנים/לינקים נשמרות קשיחות, טקסט תיאורי נשאר גמיש.
+
+### 8.2 שלבי מימוש (Execution Plan)
+
+1. **Fact Repository (מקורות אמת מובנים)**
+  - להוסיף קבצי ידע מובנים תחת `knowledge/` (למשל `facts.projects.json`, `facts.skills.json`, `facts.experience.json`).
+  - כל שדה יסומן כ-`verified=true` רק לאחר אישור ידני.
+
+2. **Prompt Contract קשיח**
+  - לעדכן פרומפטים ב-`src/gemini.ts` כך שיכללו:
+    - `Use only provided facts`
+    - `If missing, omit instead of guessing`
+    - `Do not infer residence/location from education`
+  - להגדיר explicit do/don't rules עם examples.
+
+3. **Relevance Mapping לפני ניסוח**
+  - שלב ביניים שממפה בין JD ל-facts קיימים בלבד.
+  - הפלט של המיפוי: `must_include`, `optional`, `gaps`.
+
+4. **Wording-Only Generation**
+  - יצירה/Refine תעבוד על facts שנבחרו בלבד.
+  - אסור להוסיף entities חדשים (skills, employers, projects, metrics).
+
+5. **Post-Generation Verifier**
+  - הרחבת הולידציה הקיימת:
+    - אין residence/city claims אם לא הופיעו בקלט אישי.
+    - אין skills/projects/tools שלא קיימים ב-facts.
+    - אין שינוי URL לקישורים נעולים.
+
+6. **Eval Harness**
+  - להוסיף סט בדיקות קבוע (20+ דוגמאות) למדידת:
+    - factual precision,
+    - no-new-facts,
+    - job relevance quality.
+
+### 8.3 Deliverables
+
+- קבצי ידע מאומתים (`knowledge/*`).
+- עדכון פרומפטים וולידטורים ב-`src/gemini.ts`.
+- בדיקות smoke + eval תיעודיות.
+- דוח החלטה מעודכן עם trade-offs.
+
+### 8.4 Exit Criteria
+
+- אין המצאות עובדתיות במדגם eval.
+- אין הזרקת מקום מגורים כשלא צויין במקור.
+- התאמה למשרה נשמרת (keyword/ATS relevance) תוך שימור עובדות.
+
 ### שלבי פיתוח לבקרת אורך (בוצע/מבוצע)
 
 1. להגדיר תקציבי תוכן לכל סקשן (Summary/Skills/Experience/Projects/Education).
